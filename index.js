@@ -30,7 +30,7 @@ function loadCredentials() {
   } catch (e) {
     console.error('Credential load error:', e.message);
   }
-  return { phone: null, password: null, token: null, autoClaimOn: false };
+  return { phone: null, password: null, token: null, name: null, autoClaimOn: false };
 }
 
 function saveCredentials(data) {
@@ -85,6 +85,23 @@ api.interceptors.request.use(config => {
   return config;
 });
 
+async function apiGetProfile() {
+  if (!authToken) return null;
+  try {
+    const res = await api.post('/get_info', {});
+    if (res.data && res.data.success) {
+      return res.data.nickname || res.data.account || res.data.username || null;
+    }
+    const res2 = await api.get('/getUserLevelInfo');
+    if (res2.data && res2.data.success) {
+      return res2.data.nickname || res2.data.account || res2.data.username || null;
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
 async function apiClaim() {
   if (!authToken) return { success: false, error: 'Not logged in' };
   try {
@@ -118,7 +135,14 @@ function mainMenu() {
 
 bot.onText(/\/start/, (msg) => {
   if (!isOwner(msg)) return bot.sendMessage(msg.chat.id, 'Apni authorized na.');
-  const status = isLoggedIn() ? `Logged in ✅ (Phone: ${maskPhone(creds.phone)})` : 'Login kora nai ❌';
+  let status;
+  if (isLoggedIn()) {
+    status = '✅ Logged in';
+    if (creds.name) status += `\n👤 Name: ${creds.name}`;
+    status += `\n📱 Phone: ${maskPhone(creds.phone)}`;
+  } else {
+    status = '❌ Login kora nai';
+  }
   bot.sendMessage(msg.chat.id, `ZenQuant Auto Claim Bot v2\n\n${status}`, mainMenu());
 });
 
@@ -164,15 +188,20 @@ bot.on('message', (msg) => {
     bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
     bot.sendMessage(msg.chat.id, '⏳ Login hocche...');
 
-    apiLogin(state.phone, password).then(result => {
+    apiLogin(state.phone, password).then(async (result) => {
       delete pendingLogin[msg.chat.id];
       if (result.success) {
         creds.phone = state.phone;
         creds.password = password;
         creds.token = result.token;
         authToken = result.token;
+        const name = await apiGetProfile();
+        if (name) creds.name = name;
         saveCredentials(creds);
-        bot.sendMessage(msg.chat.id, '✅ Login successful!', mainMenu());
+        const msgText = creds.name
+          ? `✅ Login successful!\n👤 Name: ${creds.name}`
+          : '✅ Login successful!';
+        bot.sendMessage(msg.chat.id, msgText, mainMenu());
       } else {
         bot.sendMessage(msg.chat.id, `❌ Login failed: ${result.error}`, mainMenu());
       }
@@ -191,7 +220,7 @@ function doLogout(chatId) {
     clearTimeout(claimTimer);
     claimTimer = null;
   }
-  creds = { phone: null, password: null, token: null, autoClaimOn: false };
+  creds = { phone: null, password: null, token: null, name: null, autoClaimOn: false };
   authToken = null;
   saveCredentials(creds);
   bot.sendMessage(chatId, '🚪 Logout hoyeche.', mainMenu());
@@ -234,9 +263,18 @@ function sendStatus(chatId) {
     ? new Date(lastClaimTime.getTime() + 3 * 60 * 60 * 1000).toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })
     : 'N/A';
 
+  let loginLine;
+  if (isLoggedIn()) {
+    loginLine = '✅ Logged in';
+    if (creds.name) loginLine += `\n👤 Name: ${creds.name}`;
+    loginLine += `\n📱 Phone: ${maskPhone(creds.phone)}`;
+  } else {
+    loginLine = '❌ Login kora nai';
+  }
+
   const text =
     `📊 *Status*\n\n` +
-    `Login: ${isLoggedIn() ? '✅ ' + maskPhone(creds.phone) : '❌ Login kora nai'}\n` +
+    `Login: ${loginLine}\n` +
     `Auto Claim: ${autoClaimOn ? '🟢 ON' : '🔴 OFF'}\n` +
     `Last Claim: ${lastClaimTime ? lastClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' }) : 'Kono din na'}\n` +
     `Last Result: ${lastClaimStatus}\n` +
@@ -317,5 +355,12 @@ async function runClaim(chatId, manual) {
     isClaiming = false;
   }
 }
+
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled rejection:', err.message, err.stack?.slice(0,200));
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err.message, err.stack?.slice(0,200));
+});
 
 console.log('Bot v2 started.');
