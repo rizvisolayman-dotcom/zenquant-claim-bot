@@ -85,10 +85,39 @@ async function apiCreateOrder(type, price, minuteIndex) {
   } catch (e) { return { success: false, msg: e.response?.data?.msg || e.message }; }
 }
 
+function extractList(res) {
+  if (!res || !res.data) return null;
+  const d = res.data;
+  if (d.success === false) return null;
+  // Try common response formats
+  let list = d.data?.list || d.data?.records || d.list || d.records || d.data;
+  if (Array.isArray(list)) return list;
+  if (list && Array.isArray(list.list)) return list.list;
+  if (list && Array.isArray(list.records)) return list.records;
+  return null;
+}
+
 async function apiGetDealList(page, size, type) {
   try {
-    const res = await api.get('/getDealList', { params: { page: page || 1, size: size || 20, type: type || 2 } });
-    return { success: !!res.data?.success, data: res.data?.data || res.data, msg: res.data?.msg || '' };
+    const res = await api.get('/getDealList', { params: { page: page || 1, size: size || 20, type: type ?? 2 } });
+    const list = extractList(res);
+    return { success: !!list, data: list || [], msg: res.data?.msg || '' };
+  } catch (e) { return { success: false, data: [], msg: e.message }; }
+}
+
+async function apiGetDealLogs(page, size) {
+  try {
+    const res = await api.get('/getDealLogs', { params: { page: page || 1, size: size || 20 } });
+    const list = extractList(res);
+    return { success: !!list, data: list || [], msg: res.data?.msg || '' };
+  } catch (e) { return { success: false, data: [], msg: e.message }; }
+}
+
+async function apiOtherHistory(page, size, type) {
+  try {
+    const res = await api.post('/otherHistory', { page: page || 1, size: size || 20, ...(type !== undefined && { type }) });
+    const list = extractList(res);
+    return { success: !!list, data: list || [], msg: res.data?.msg || '' };
   } catch (e) { return { success: false, data: [], msg: e.message }; }
 }
 
@@ -370,16 +399,14 @@ async function runConfirm(chatId) {
     // Try to get exact next claim time from active deals
     let nextTime = new Date(Date.now() + CLAIM_INTERVAL_MS);
     try {
-      const dealRes = await apiGetDealList(1, 5, 2);
-      if (dealRes.success && dealRes.data?.list?.length) {
-        const activeOrders = dealRes.data.list.filter(o => o.status === 1);
-        if (activeOrders.length) {
-          // Use the sell_time (end time) if available
-          for (const o of activeOrders) {
-            if (o.sell_time) {
-              const t = new Date(o.sell_time);
-              if (t > Date.now() && t < nextTime) nextTime = t;
-            }
+      const dealRes = await apiGetDealList(1, 5, 0);
+      if (dealRes.success && dealRes.data.length) {
+        const activeOrders = dealRes.data.filter(o => o.status === 1 || o.status === 'executing');
+        for (const o of activeOrders) {
+          const endField = o.sell_time || o.end_time || o.complete_time;
+          if (endField) {
+            const t = new Date(endField);
+            if (t > Date.now() && (!nextTime || t < nextTime)) nextTime = t;
           }
         }
       }
@@ -407,31 +434,54 @@ async function runConfirm(chatId) {
 async function runHistory(chatId) {
   if (!isLoggedIn()) return bot.sendMessage(chatId, '❌ Age /login diye login korun.');
   try {
-    const res = await apiGetDealList(1, 10, 2);
-    if (!res.success || !res.data?.list?.length) {
+    let orders = null;
+    let source = '';
+    // Try multiple endpoints
+    for (const attempt of [
+      async () => { const r = await apiGetDealList(1, 20, 0); return { d: r.data, s: 'active(0)' }; },
+      async () => { const r = await apiGetDealList(1, 20, 1); return { d: r.data, s: 'history(1)' }; },
+      async () => { const r = await apiGetDealList(1, 20, 2); return { d: r.data, s: 'all(2)' }; },
+      async () => { const r = await apiOtherHistory(1, 20, 0); return { d: r.data, s: 'otherHistory' }; },
+      async () => { const r = await apiGetDealLogs(1, 20); return { d: r.data, s: 'dealLogs' }; },
+    ]) {
+      const { d, s } = await attempt();
+      if (d && d.length > 0) { orders = d; source = s; break; }
+    }
+
+    if (!orders || !orders.length) {
       return bot.sendMessage(chatId, '📖 Kono order history nei.', mainMenu());
     }
-    const lines = ['📖 *Order History (Active/Recent)*'];
-    for (const order of res.data.list) {
-      const amount = Number(order.amount || order.price || 0);
-      const type = ['Regular', 'Closed', 'PLUS+', 'Phoenix'][order.type] || `Type ${order.type}`;
-      const status = order.status === 1 ? '✅ Active' : order.status === 2 ? '⏳ Pending' : '✅ Completed';
-      const orderSn = order.ordersn || order.orderNo || 'N/A';
+
+    const lines = [`📖 *Order History (${source})*`];
+    for (const order of orders) {
+      const amount = Number(order.amount || order.price || order.money || 0);
+      const t = [undefined, 'Regular', 'Closed', 'PLUS+', 'Phoenix'][order.type] || `T${order.type}`;
+      let status = '';
+      if (order.status === 1 || order.status === 'executing') status = '⚡ Active';
+      else if (order.status === 2 || order.status === 'redeeming') status = '⏳ Redeeming';
+      else if (order.status === 3 || order.status === 'completed') status = '✅ Done';
+      else if (order.status === 4 || order.status === 'stopped') status = '⏹ Stopped';
+      else status = `S${order.status}`;
+      const orderSn = order.ordersn || order.orderNo || order.orderno || order.sn || '';
       let endTimeStr = '';
-      if (order.sell_time) {
-        const t = new Date(order.sell_time);
-        endTimeStr = `\n⌛ Ends: ${t.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`;
-      } else if (order.end_time) {
-        const t = new Date(order.end_time);
-        endTimeStr = `\n⌛ Ends: ${t.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`;
+      const endField = order.sell_time || order.end_time || order.complete_time || order.finish_time;
+      if (endField) {
+        const et = new Date(endField);
+        if (!isNaN(et)) endTimeStr = `\n⌛ Ends: ${et.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`;
+      }
+      const createField = order.create_time || order.add_time || order.buy_time || order.start_time;
+      let createStr = '';
+      if (createField) {
+        const ct = new Date(createField);
+        if (!isNaN(ct)) createStr = `\n🕐 Created: ${ct.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`;
       }
       lines.push(`
 ━━━━━━━━━━━━━━━━
-📌 #${orderSn.toString().slice(-8)}
-💵 ${type} | 💰 $${amount}
-📊 ${status}${endTimeStr}`);
+📌 ${orderSn.toString().slice(-8) || 'N/A'}
+💵 ${t} | 💰 $${amount}
+📊 ${status}${createStr}${endTimeStr}`);
     }
-    lines.push(`\n━━━━━━━━━━━━━━━━\n📱 Total: ${res.data.list.length} orders`);
+    lines.push(`\n━━━━━━━━━━━━━━━━\n📱 Total: ${orders.length} orders`);
     bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown', ...mainMenu() });
   } catch (e) {
     bot.sendMessage(chatId, `❌ History error: ${e.message}`, mainMenu());
