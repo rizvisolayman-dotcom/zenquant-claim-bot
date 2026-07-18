@@ -87,26 +87,13 @@ api.interceptors.request.use(config => {
 
 async function apiGetProfile() {
   if (!authToken) return null;
-  const endpoints = [
-    () => api.post('/get_info', {}),
-    () => api.get('/getDealInfo'),
-    () => api.post('/getIndexData', {}),
-    () => api.get('/getUserLevelInfo'),
-  ];
-  for (const ep of endpoints) {
-    try {
-      const res = await ep();
-      const d = res.data;
-      if (d && d.success) {
-        const name = d.nickname || d.account || d.username
-          || d.user?.nickname || d.user?.account || d.user?.username
-          || d.data?.nickname || d.data?.account || d.data?.username
-          || d.userLevel?.nickname
-          || null;
-        if (name) return name;
-      }
-    } catch (_) {}
-  }
+  try {
+    const res = await api.post('/get_info', {});
+    const d = res.data;
+    if (d && d.success) {
+      return d.data?.userinfo?.username || d.userinfo?.username || null;
+    }
+  } catch (_) {}
   return null;
 }
 
@@ -143,15 +130,15 @@ function mainMenu() {
 
 bot.onText(/\/start/, (msg) => {
   if (!isOwner(msg)) return bot.sendMessage(msg.chat.id, 'Apni authorized na.');
-  let status;
+  const lines = ['🤖 *ZenQuant Claim Bot v2*', ''];
   if (isLoggedIn()) {
-    status = '✅ Logged in';
-    if (creds.name) status += `\n👤 Name: ${creds.name}`;
-    status += `\n📱 Phone: ${maskPhone(creds.phone)}`;
+    lines.push('✅ *Status:* Logged in');
+    if (creds.name) lines.push(`👤 *Name:* ${creds.name}`);
+    lines.push(`📱 *Phone:* ${maskPhone(creds.phone)}`);
   } else {
-    status = '❌ Login kora nai';
+    lines.push('❌ *Status:* Login kora nai');
   }
-  bot.sendMessage(msg.chat.id, `ZenQuant Auto Claim Bot v2\n\n${status}`, mainMenu());
+  bot.sendMessage(msg.chat.id, lines.join('\n'), { parse_mode: 'Markdown', ...mainMenu() });
 });
 
 bot.onText(/\/login/, (msg) => {
@@ -203,24 +190,10 @@ bot.on('message', (msg) => {
         creds.password = password;
         creds.token = result.token;
         authToken = result.token;
-        let msgText = '✅ Login successful!';
-        try {
-          const name = await apiGetProfile();
-          if (name) {
-            creds.name = name;
-            msgText += `\n👤 Name: ${name}`;
-          } else {
-            // Debug - try raw API call
-            try {
-              const debug = await api.post('/get_info', {});
-              msgText += `\n🐛 API raw: ${JSON.stringify(debug.data).slice(0, 300)}`;
-            } catch (_) {}
-          }
-        } catch (e) {
-          msgText += `\n⚠️ Name fetch error: ${e.message}`;
-        }
+        const name = await apiGetProfile();
+        if (name) creds.name = name;
         saveCredentials(creds);
-        bot.sendMessage(msg.chat.id, msgText, mainMenu());
+        bot.sendMessage(msg.chat.id, '✅ Login successful!', mainMenu());
       } else {
         bot.sendMessage(msg.chat.id, `❌ Login failed: ${result.error}`, mainMenu());
       }
@@ -282,23 +255,21 @@ function sendStatus(chatId) {
     ? new Date(lastClaimTime.getTime() + 3 * 60 * 60 * 1000).toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })
     : 'N/A';
 
-  let loginLine;
+  const lines = ['📊 *Status*', ''];
   if (isLoggedIn()) {
-    loginLine = '✅ Logged in';
-    if (creds.name) loginLine += `\n👤 Name: ${creds.name}`;
-    loginLine += `\n📱 Phone: ${maskPhone(creds.phone)}`;
+    lines.push('✅ *Login:* Active');
+    if (creds.name) lines.push(`👤 *Name:* ${creds.name}`);
+    lines.push(`📱 *Phone:* ${maskPhone(creds.phone)}`);
   } else {
-    loginLine = '❌ Login kora nai';
+    lines.push('❌ *Login:* Kora nai');
   }
+  lines.push('');
+  lines.push(`🔄 *Auto Claim:* ${autoClaimOn ? 'ON' : 'OFF'}`);
+  lines.push(`⏱ *Last Claim:* ${lastClaimTime ? lastClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' }) : 'Kono din na'}`);
+  lines.push(`📌 *Result:* ${lastClaimStatus}`);
+  lines.push(`🔜 *Next Claim:* ${nextClaim}`);
 
-  const text =
-    `📊 *Status*\n\n` +
-    `Login: ${loginLine}\n` +
-    `Auto Claim: ${autoClaimOn ? '🟢 ON' : '🔴 OFF'}\n` +
-    `Last Claim: ${lastClaimTime ? lastClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' }) : 'Kono din na'}\n` +
-    `Last Result: ${lastClaimStatus}\n` +
-    `Next Claim (approx): ${nextClaim}`;
-
+  const text = lines.join('\n');
   bot.sendMessage(chatId, text, { parse_mode: 'Markdown', ...mainMenu() });
 }
 
