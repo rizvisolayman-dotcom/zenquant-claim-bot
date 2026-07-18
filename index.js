@@ -7,16 +7,17 @@ const path = require('path');
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OWNER_ID = process.env.OWNER_ID;
 const COUNTRY_CODE = process.env.COUNTRY_CODE || '880';
-
 const API_BASE = 'https://api.zenquantai.com/api';
+const CLAIM_INTERVAL_MS = 3 * 60 * 60 * 1000;
+
 const api = axios.create({ baseURL: API_BASE });
 let authToken = null;
-
 const DATA_DIR = path.join(__dirname, 'data');
 const CRED_FILE = path.join(DATA_DIR, 'credentials.json');
 
 let autoClaimOn = false;
 let claimTimer = null;
+let nextClaimTime = null;
 let lastClaimTime = null;
 let lastClaimStatus = 'Kono claim hoyni ekhono';
 let isClaiming = false;
@@ -24,15 +25,11 @@ let pendingLogin = {};
 
 function loadCredentials() {
   try {
-    if (fs.existsSync(CRED_FILE)) {
+    if (fs.existsSync(CRED_FILE))
       return JSON.parse(fs.readFileSync(CRED_FILE, 'utf8'));
-    }
-  } catch (e) {
-    console.error('Credential load error:', e.message);
-  }
-  return { phone: null, password: null, token: null, name: null, autoClaimOn: false };
+  } catch (e) { console.error('Credential load error:', e.message); }
+  return { phone: null, password: null, token: null, name: null, nextClaimAt: null, autoClaimOn: false };
 }
-
 function saveCredentials(data) {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(CRED_FILE, JSON.stringify(data, null, 2));
@@ -41,121 +38,82 @@ function saveCredentials(data) {
 let creds = loadCredentials();
 autoClaimOn = !!creds.autoClaimOn;
 if (creds.token) authToken = creds.token;
+if (creds.nextClaimAt) nextClaimTime = new Date(creds.nextClaimAt);
+
+api.interceptors.request.use(cfg => {
+  if (authToken) cfg.headers.Authorization = 'Bearer ' + authToken;
+  return cfg;
+});
 
 const app = express();
 app.get('/', (req, res) => res.send('ZenQuant Claim Bot v2 is running.'));
-app.listen(process.env.PORT || 3000, () => {
-  console.log('Web server started.');
-});
+app.listen(process.env.PORT || 3000, () => console.log('Web server started.'));
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-function isOwner(msg) {
-  return String(msg.chat.id) === String(OWNER_ID);
-}
-
-function isLoggedIn() {
-  return !!(creds.phone && creds.password);
-}
-
-function maskPhone(phone) {
-  if (!phone) return '';
-  return phone.slice(0, 3) + '****' + phone.slice(-2);
-}
+function isOwner(msg) { return String(msg.chat.id) === String(OWNER_ID); }
+function isLoggedIn() { return !!(creds.phone && creds.password); }
+function maskPhone(p) { return p ? p.slice(0, 3) + '****' + p.slice(-2) : ''; }
 
 async function apiLogin(phone, password) {
-  const res = await api.post('/login', {
-    phone,
-    phone_code: COUNTRY_CODE,
-    password,
-    type: 'mobile',
-  });
-  if (res.data && res.data.success) {
-    const token = res.data.accessToken || res.data.data;
-    return { success: true, token };
-  }
-  const msg = res.data?.msg || res.data?.message || 'Login failed';
-  return { success: false, error: msg };
+  try {
+    const res = await api.post('/login', { phone, phone_code: COUNTRY_CODE, password, type: 'mobile' });
+    if (res.data?.success) return { success: true, token: res.data.accessToken || res.data.data };
+    return { success: false, error: res.data?.msg || 'Login failed' };
+  } catch (e) { return { success: false, error: e.response?.data?.msg || e.message }; }
 }
 
-api.interceptors.request.use(config => {
-  if (authToken) {
-    config.headers.Authorization = 'Bearer ' + authToken;
-  }
-  return config;
-});
-
-async function apiGetProfile() {
-  if (!authToken) return null;
+async function apiGetInfo() {
   try {
     const res = await api.post('/get_info', {});
-    const d = res.data;
-    if (d && d.success) {
-      return d.data?.userinfo?.username || d.userinfo?.username || null;
-    }
+    if (res.data?.success) return res.data.data || res.data;
   } catch (_) {}
   return null;
 }
 
-async function apiClaim() {
-  if (!authToken) return { success: false, error: 'Not logged in' };
+async function apiClaimProfit() {
   try {
-    const res = await api.post('/createOrder', {
-      type: 0,
-      price: 0,
-      minuteIndex: 0,
-      is_new: 1,
-    });
-    if (res.data && res.data.success) {
-      return { success: true, data: res.data };
-    }
-    return { success: false, error: res.data?.msg || 'Claim failed' };
-  } catch (e) {
-    return { success: false, error: e.response?.data?.msg || e.message };
-  }
+    const res = await api.post('/receiveProfit', {});
+    return { success: !!res.data?.success, msg: res.data?.msg || '', data: res.data };
+  } catch (e) { return { success: false, msg: e.message }; }
+}
+
+async function apiCreateOrder(price) {
+  try {
+    const res = await api.post('/createOrder', { type: 0, price, minuteIndex: 0, is_new: 1 });
+    return { success: !!res.data?.success, msg: res.data?.msg || '', data: res.data };
+  } catch (e) { return { success: false, msg: e.response?.data?.msg || e.message }; }
 }
 
 function mainMenu() {
-  const buttons = [];
+  const btns = [];
   if (isLoggedIn()) {
-    buttons.push([{ text: autoClaimOn ? '🟢 Auto Claim: ON' : '🔴 Auto Claim: OFF', callback_data: 'toggle' }]);
-    buttons.push([{ text: '⚡ Ekhoni Claim Koro', callback_data: 'claim_now' }]);
-    buttons.push([{ text: '📊 Status', callback_data: 'status' }]);
-    buttons.push([{ text: '🚪 Logout', callback_data: 'logout' }]);
+    btns.push([{ text: autoClaimOn ? '🟢 Auto Claim: ON' : '🔴 Auto Claim: OFF', callback_data: 'toggle' }]);
+    btns.push([{ text: '⚡ Ekhoni Claim Koro', callback_data: 'claim_now' }]);
+    btns.push([{ text: '📊 Status', callback_data: 'status' }]);
+    btns.push([{ text: '🚪 Logout', callback_data: 'logout' }]);
   } else {
-    buttons.push([{ text: '🔑 Login Koro', callback_data: 'login_start' }]);
+    btns.push([{ text: '🔑 Login Koro', callback_data: 'login_start' }]);
   }
-  return { reply_markup: { inline_keyboard: buttons } };
+  return { reply_markup: { inline_keyboard: btns } };
 }
 
 bot.onText(/\/start/, (msg) => {
-  if (!isOwner(msg)) return bot.sendMessage(msg.chat.id, 'Apni authorized na.');
-  const lines = ['🤖 *ZenQuant Claim Bot v2*', ''];
+  if (!isOwner(msg)) return;
+  const lines = ['🤖 *ZenQuant Auto Claim Bot*', ''];
   if (isLoggedIn()) {
-    lines.push('✅ *Status:* Logged in');
+    lines.push('✅ *Login:* Active');
     if (creds.name) lines.push(`👤 *Name:* ${creds.name}`);
     lines.push(`📱 *Phone:* ${maskPhone(creds.phone)}`);
   } else {
-    lines.push('❌ *Status:* Login kora nai');
+    lines.push('❌ *Login:* Kora nai');
   }
   bot.sendMessage(msg.chat.id, lines.join('\n'), { parse_mode: 'Markdown', ...mainMenu() });
 });
 
-bot.onText(/\/login/, (msg) => {
-  if (!isOwner(msg)) return;
-  startLoginFlow(msg.chat.id);
-});
-
-bot.onText(/\/logout/, (msg) => {
-  if (!isOwner(msg)) return;
-  doLogout(msg.chat.id);
-});
-
-bot.onText(/\/status/, (msg) => {
-  if (!isOwner(msg)) return;
-  sendStatus(msg.chat.id);
-});
-
+bot.onText(/\/login/, (msg) => { if (isOwner(msg)) startLoginFlow(msg.chat.id); });
+bot.onText(/\/logout/, (msg) => { if (isOwner(msg)) doLogout(msg.chat.id); });
+bot.onText(/\/status/, (msg) => { if (isOwner(msg)) sendStatus(msg.chat.id); });
 bot.onText(/\/claim/, (msg) => {
   if (!isOwner(msg)) return;
   if (!isLoggedIn()) return bot.sendMessage(msg.chat.id, '❌ Age /login diye login korun.');
@@ -163,18 +121,13 @@ bot.onText(/\/claim/, (msg) => {
 });
 
 bot.on('message', (msg) => {
-  if (!isOwner(msg)) return;
-  if (!msg.text || msg.text.startsWith('/')) return;
-
+  if (!isOwner(msg) || !msg.text || msg.text.startsWith('/')) return;
   const state = pendingLogin[msg.chat.id];
   if (!state) return;
-
   if (state.step === 'phone') {
     const phone = msg.text.trim();
-    if (!/^\d{6,15}$/.test(phone)) {
-      bot.sendMessage(msg.chat.id, '❌ Sotik phone number din (country code chara, jemon: 1713882071)');
-      return;
-    }
+    if (!/^\d{6,15}$/.test(phone))
+      return bot.sendMessage(msg.chat.id, '❌ Sotik phone number din (jemon: 1713882071)');
     state.phone = phone;
     state.step = 'password';
     bot.sendMessage(msg.chat.id, '🔒 Ekhon password din:');
@@ -182,21 +135,20 @@ bot.on('message', (msg) => {
     const password = msg.text.trim();
     bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
     bot.sendMessage(msg.chat.id, '⏳ Login hocche...');
-
     apiLogin(state.phone, password).then(async (result) => {
       delete pendingLogin[msg.chat.id];
-      if (result.success) {
-        creds.phone = state.phone;
-        creds.password = password;
-        creds.token = result.token;
-        authToken = result.token;
-        const name = await apiGetProfile();
-        if (name) creds.name = name;
-        saveCredentials(creds);
-        bot.sendMessage(msg.chat.id, '✅ Login successful!', mainMenu());
-      } else {
-        bot.sendMessage(msg.chat.id, `❌ Login failed: ${result.error}`, mainMenu());
-      }
+      if (!result.success)
+        return bot.sendMessage(msg.chat.id, `❌ Login failed: ${result.error}`, mainMenu());
+      creds.phone = state.phone;
+      creds.password = password;
+      creds.token = result.token;
+      authToken = result.token;
+      try {
+        const info = await apiGetInfo();
+        if (info?.userinfo?.username) creds.name = info.userinfo.username;
+      } catch (_) {}
+      saveCredentials(creds);
+      bot.sendMessage(msg.chat.id, '✅ Login successful!', mainMenu());
     });
   }
 });
@@ -208,53 +160,32 @@ function startLoginFlow(chatId) {
 
 function doLogout(chatId) {
   autoClaimOn = false;
-  if (claimTimer) {
-    clearTimeout(claimTimer);
-    claimTimer = null;
-  }
-  creds = { phone: null, password: null, token: null, name: null, autoClaimOn: false };
-  authToken = null;
+  if (claimTimer) { clearTimeout(claimTimer); claimTimer = null; }
+  creds = { phone: null, password: null, token: null, name: null, nextClaimAt: null, autoClaimOn: false };
+  authToken = null; nextClaimTime = null;
   saveCredentials(creds);
   bot.sendMessage(chatId, '🚪 Logout hoyeche.', mainMenu());
 }
 
 bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
-  if (String(chatId) !== String(OWNER_ID)) {
+  if (String(chatId) !== String(OWNER_ID))
     return bot.answerCallbackQuery(query.id, { text: 'Authorized na.' });
-  }
-
-  if (query.data === 'login_start') {
-    startLoginFlow(chatId);
-  } else if (query.data === 'logout') {
-    doLogout(chatId);
-  } else if (query.data === 'toggle') {
-    if (!isLoggedIn()) {
-      bot.answerCallbackQuery(query.id, { text: 'Age login korun.' });
-      return;
-    }
-    if (autoClaimOn) turnOff(chatId);
-    else turnOn(chatId);
-  } else if (query.data === 'claim_now') {
-    if (!isLoggedIn()) {
-      bot.answerCallbackQuery(query.id, { text: 'Age login korun.' });
-      return;
-    }
+  const action = query.data;
+  if (action === 'login_start') startLoginFlow(chatId);
+  else if (action === 'logout') doLogout(chatId);
+  else if (action === 'toggle') {
+    if (!isLoggedIn()) return bot.answerCallbackQuery(query.id, { text: 'Age login korun.' });
+    if (autoClaimOn) turnOff(chatId); else turnOn(chatId);
+  } else if (action === 'claim_now') {
+    if (!isLoggedIn()) return bot.answerCallbackQuery(query.id, { text: 'Age login korun.' });
     bot.answerCallbackQuery(query.id, { text: 'Claim shuru hocche...' });
     runClaim(chatId, true);
-    return;
-  } else if (query.data === 'status') {
-    sendStatus(chatId);
-  }
-
+  } else if (action === 'status') sendStatus(chatId);
   bot.answerCallbackQuery(query.id);
 });
 
 function sendStatus(chatId) {
-  const nextClaim = autoClaimOn && lastClaimTime
-    ? new Date(lastClaimTime.getTime() + 3 * 60 * 60 * 1000).toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })
-    : 'N/A';
-
   const lines = ['📊 *Status*', ''];
   if (isLoggedIn()) {
     lines.push('✅ *Login:* Active');
@@ -267,90 +198,114 @@ function sendStatus(chatId) {
   lines.push(`🔄 *Auto Claim:* ${autoClaimOn ? 'ON' : 'OFF'}`);
   lines.push(`⏱ *Last Claim:* ${lastClaimTime ? lastClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' }) : 'Kono din na'}`);
   lines.push(`📌 *Result:* ${lastClaimStatus}`);
-  lines.push(`🔜 *Next Claim:* ${nextClaim}`);
-
-  const text = lines.join('\n');
-  bot.sendMessage(chatId, text, { parse_mode: 'Markdown', ...mainMenu() });
+  const nextStr = nextClaimTime
+    ? nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })
+    : 'N/A';
+  lines.push(`🔜 *Next Claim:* ${nextStr}`);
+  bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown', ...mainMenu() });
 }
 
 function turnOn(chatId) {
-  if (!isLoggedIn()) {
-    bot.sendMessage(chatId, '❌ Age /login diye login korun.', mainMenu());
-    return;
-  }
-  if (autoClaimOn) {
-    bot.sendMessage(chatId, 'Already ON ache.', mainMenu());
-    return;
-  }
+  if (!isLoggedIn()) return bot.sendMessage(chatId, '❌ Age /login diye login korun.', mainMenu());
+  if (autoClaimOn) return bot.sendMessage(chatId, 'Already ON ache.', mainMenu());
   autoClaimOn = true;
   creds.autoClaimOn = true;
   saveCredentials(creds);
-  bot.sendMessage(chatId, '🟢 Auto Claim ON kora holo. Prothom claim ekhoni shuru hocche.', mainMenu());
+  bot.sendMessage(chatId, '🟢 Auto Claim ON. Prothom claim ekhoni shuru hocche...', mainMenu());
   runClaim(chatId, false);
   scheduleNext();
 }
 
 function turnOff(chatId) {
-  autoClaimOn = false;
-  creds.autoClaimOn = false;
-  saveCredentials(creds);
-  if (claimTimer) {
-    clearTimeout(claimTimer);
-    claimTimer = null;
-  }
-  bot.sendMessage(chatId, '🔴 Auto Claim OFF kora holo.', mainMenu());
+  autoClaimOn = false; creds.autoClaimOn = false; saveCredentials(creds);
+  if (claimTimer) { clearTimeout(claimTimer); claimTimer = null; }
+  bot.sendMessage(chatId, '🔴 Auto Claim OFF.', mainMenu());
 }
 
 function scheduleNext() {
   if (claimTimer) clearTimeout(claimTimer);
   if (!autoClaimOn) return;
-  claimTimer = setTimeout(() => {
-    runClaim(OWNER_ID, false);
-    scheduleNext();
-  }, 3 * 60 * 60 * 1000);
+  if (nextClaimTime) {
+    const delay = Math.max(0, nextClaimTime.getTime() - Date.now());
+    claimTimer = setTimeout(() => { runClaim(OWNER_ID, false); scheduleNext(); }, delay);
+  } else {
+    claimTimer = setTimeout(() => { runClaim(OWNER_ID, false); scheduleNext(); }, CLAIM_INTERVAL_MS);
+  }
 }
 
-if (autoClaimOn && isLoggedIn()) {
-  console.log('Auto claim was ON, resuming...');
+if (autoClaimOn && isLoggedIn() && nextClaimTime) {
+  console.log('Resuming auto claim scheduler...');
   scheduleNext();
 }
 
 async function runClaim(chatId, manual) {
-  if (!isLoggedIn()) {
-    bot.sendMessage(chatId, '❌ Age /login diye login korun.');
-    return;
-  }
-  if (isClaiming) {
-    bot.sendMessage(chatId, '⏳ Ager claim ekhono cholche, wait korun.');
-    return;
-  }
+  if (!isLoggedIn()) return bot.sendMessage(chatId, '❌ Age /login diye login korun.');
+  if (isClaiming) return bot.sendMessage(chatId, '⏳ Ager claim ekhono cholche, wait korun.');
   isClaiming = true;
-  bot.sendMessage(chatId, '⏳ Claim hocche...');
+  const send = (t) => bot.sendMessage(chatId, t);
 
   try {
-    const result = await apiClaim();
-    lastClaimTime = new Date();
-    if (result.success) {
-      lastClaimStatus = '✅ Success';
-      bot.sendMessage(chatId, '✅ Claim successful hoyeche!');
-    } else {
-      lastClaimStatus = `❌ ${result.error}`;
-      bot.sendMessage(chatId, `❌ Error: ${result.error}`);
+    send('⏳ Site theke info nicchi...');
+    const info = await apiGetInfo();
+    if (!info) { throw new Error('API response failed'); }
+
+    const u = info.userinfo || {};
+    if (u.username && u.username !== creds.name) {
+      creds.name = u.username; saveCredentials(creds);
     }
+
+    const profit = Number(u.one_profit || 0) + Number(u.two_profit || 0) + Number(u.three_profit || 0)
+      + Number(u.recharge_one_profit || 0) + Number(u.recharge_two_profit || 0) + Number(u.recharge_three_profit || 0);
+    const balance = Number(u.available_balance || 0);
+    const total = Number(u.total_balance || 0);
+
+    send(`📊 *Account Info*
+👤 Name: ${u.username || creds.name || 'N/A'}
+💰 Balance: $${balance}
+📦 Total: $${total}
+💵 Claimable Profit: $${profit}`);
+
+    if (profit > 0) {
+      send(`⏳ Profit ($${profit}) claim korchi...`);
+      const claimRes = await apiClaimProfit();
+      if (!claimRes.success) throw new Error('Claim profit failed: ' + claimRes.msg);
+      send(`✅ Profit claimed!`);
+    } else {
+      send(`ℹ️ Kono profit claim kora jay na.`);
+    }
+
+    const investAmount = balance > 10 ? balance : 10;
+    send(`⏳ New order create korchi ($${investAmount}, 3h)...`);
+    const orderRes = await apiCreateOrder(investAmount);
+    if (!orderRes.success) {
+      if (orderRes.msg.includes('1027') || orderRes.msg.includes('Injection failed')) {
+        throw new Error('Injection failed. Balance thik ase?');
+      }
+      throw new Error('Order failed: ' + orderRes.msg);
+    }
+
+    lastClaimTime = new Date();
+    nextClaimTime = new Date(Date.now() + CLAIM_INTERVAL_MS);
+    creds.nextClaimAt = nextClaimTime.toISOString();
+    saveCredentials(creds);
+    lastClaimStatus = '✅ Success';
+
+    send(`✅ *Claim & Reinvest successful!*
+💰 Invested: $${investAmount}
+⏱ Next claim: ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
+
+    if (autoClaimOn) scheduleNext();
+
   } catch (err) {
     lastClaimTime = new Date();
-    lastClaimStatus = `❌ Error: ${err.message}`;
-    bot.sendMessage(chatId, `❌ Error hoyeche: ${err.message}`);
+    lastClaimStatus = `❌ ${err.message}`;
+    send(`❌ Error: ${err.message}`);
+    if (autoClaimOn) scheduleNext();
   } finally {
     isClaiming = false;
   }
 }
 
-process.on('unhandledRejection', (err) => {
-  console.error('Unhandled rejection:', err.message, err.stack?.slice(0,200));
-});
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception:', err.message, err.stack?.slice(0,200));
-});
-
+process.on('unhandledRejection', (err) => console.error('UHR:', err.message));
+process.on('uncaughtException', (err) => console.error('UCE:', err.message));
 console.log('Bot v2 started.');
