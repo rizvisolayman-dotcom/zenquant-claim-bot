@@ -453,9 +453,16 @@ async function runHistory(chatId) {
     }
 
     const lines = [`📖 *Order History (${source})*`];
+    // Debug: show raw fields for first order
+    const debugOrder = orders[0];
+    if (debugOrder) {
+      const keys = Object.keys(debugOrder).filter(k => !k.startsWith('_'));
+      const vals = keys.map(k => `${k}=${JSON.stringify(debugOrder[k])}`).join('\n');
+      lines.push(`\n⚙️ Raw Data:\n${vals}`);
+    }
     for (const order of orders) {
       const amount = Number(order.amount || order.price || order.money || 0);
-      const t = [undefined, 'Regular', 'Closed', 'PLUS+', 'Phoenix'][order.type] || `T${order.type}`;
+      const t = ['Regular', 'Closed', 'PLUS+', 'Phoenix'][order.type] || `T${order.type}`;
       let status = '';
       if (order.status === 1 || order.status === 'executing') status = '⚡ Active';
       else if (order.status === 2 || order.status === 'redeeming') status = '⏳ Redeeming';
