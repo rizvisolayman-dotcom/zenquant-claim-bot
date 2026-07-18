@@ -414,36 +414,35 @@ async function runConfirm(chatId) {
 async function runHistory(chatId) {
   if (!isLoggedIn()) return bot.sendMessage(chatId, '❌ Age /login diye login korun.');
   try {
-    let orders = null;
-    let rawDump = '';
-    // Try multiple endpoints
-    const attempts = [
-      { fn: () => apiGetDealList(1, 20), label: 'default(2)' },
-      { fn: () => apiGetDealList(1, 20, 0), label: 'type0' },
-      { fn: () => apiGetDealList(1, 20, 1), label: 'type1' },
-    ];
-    for (const { fn, label } of attempts) {
-      const res = await fn();
-      if (res.success && res.data.length) { orders = res.data; break; }
-      if (res.raw && !rawDump) {
-        rawDump = JSON.stringify(res.raw).substring(0, 300);
-      }
+    // Call deal list API directly and dump full response for debugging
+    const res = await api.get('/getDealList', { params: { page: 1, size: 20 } });
+    const rawStr = JSON.stringify(res.data).substring(0, 600);
+
+    // Try various response paths
+    const body = res.data;
+    let orders = [];
+    if (body?.data?.list) orders = body.data.list;
+    else if (Array.isArray(body?.data)) orders = body.data;
+    else if (Array.isArray(body?.list)) orders = body.list;
+    else if (body?.data && typeof body.data === 'object') {
+      const vals = Object.values(body.data);
+      const arr = vals.find(v => Array.isArray(v));
+      if (arr) orders = arr;
     }
 
-    if (!orders || !orders.length) {
-      let msg = '📖 Kono order history nei.';
-      if (rawDump) msg += `\n\n⚙️ Raw response:\n${rawDump.replace(/[_*[\]()~`>#+=|{}.!]/g, '\\$&')}`;
-      return bot.sendMessage(chatId, msg, { parse_mode: 'Markdown', ...mainMenu() });
+    if (!Array.isArray(orders)) orders = [];
+    if (!orders.length) {
+      return bot.sendMessage(chatId, `📖 History empty\n⚙️ \`${rawStr.replace(/[`]/g, '')}\``, { ...mainMenu() });
     }
 
     const lines = [`📖 *Order History*`];
-    // Show raw fields of first order for debugging
-    const dbg = orders[0];
-    if (dbg) {
-      const keys = Object.keys(dbg).filter(k => !k.startsWith('_'));
-      for (const k of keys) {
-        const v = typeof dbg[k] === 'object' ? JSON.stringify(dbg[k]) : String(dbg[k]);
-        lines.push(`⚙️ ${k}: ${v.substring(0, 80)}`);
+    // Dump first order fields
+    const first = orders[0];
+    if (first) {
+      for (const [k, v] of Object.entries(first)) {
+        if (k.startsWith('_')) continue;
+        const val = typeof v === 'object' ? JSON.stringify(v).substring(0, 60) : String(v).substring(0, 60);
+        lines.push(` ${k}: ${val}`);
       }
     }
     for (const order of orders) {
