@@ -78,18 +78,34 @@ async function apiClaimProfit() {
   } catch (e) { return { success: false, msg: e.message }; }
 }
 
-async function apiCreateOrder(price) {
+async function apiCreateOrder(type, price, minuteIndex) {
   try {
-    const res = await api.post('/createOrder', { type: 0, price, minuteIndex: 0, is_new: 1 });
+    const res = await api.post('/createOrder', { type, price, minuteIndex: minuteIndex || 0, is_new: 1 });
     return { success: !!res.data?.success, msg: res.data?.msg || '', data: res.data };
   } catch (e) { return { success: false, msg: e.response?.data?.msg || e.message }; }
+}
+
+async function apiGetDealList(page, size, type) {
+  try {
+    const res = await api.get('/getDealList', { params: { page: page || 1, size: size || 20, type: type || 2 } });
+    return { success: !!res.data?.success, data: res.data?.data || res.data, msg: res.data?.msg || '' };
+  } catch (e) { return { success: false, data: [], msg: e.message }; }
+}
+
+async function apiGetDealInfo() {
+  try {
+    const res = await api.get('/getDealInfo', {});
+    return { success: !!res.data?.success, data: res.data?.data || res.data, msg: res.data?.msg || '' };
+  } catch (e) { return { success: false, data: null, msg: e.message }; }
 }
 
 function mainMenu() {
   const btns = [];
   if (isLoggedIn()) {
     btns.push([{ text: autoClaimOn ? '🟢 Auto Claim: ON' : '🔴 Auto Claim: OFF', callback_data: 'toggle' }]);
-    btns.push([{ text: '⚡ Ekhoni Claim Koro', callback_data: 'claim_now' }]);
+    btns.push([{ text: '⚡ Claim Profit', callback_data: 'claim_now' }]);
+    btns.push([{ text: '✅ Confirm Injection', callback_data: 'confirm_inject' }]);
+    btns.push([{ text: '📖 Order History', callback_data: 'history' }]);
     btns.push([{ text: '📊 Status', callback_data: 'status' }]);
     btns.push([{ text: '🚪 Logout', callback_data: 'logout' }]);
   } else {
@@ -118,6 +134,16 @@ bot.onText(/\/claim/, (msg) => {
   if (!isOwner(msg)) return;
   if (!isLoggedIn()) return bot.sendMessage(msg.chat.id, '❌ Age /login diye login korun.');
   runClaim(msg.chat.id, true);
+});
+bot.onText(/\/confirm/, (msg) => {
+  if (!isOwner(msg)) return;
+  if (!isLoggedIn()) return bot.sendMessage(msg.chat.id, '❌ Age /login diye login korun.');
+  runConfirm(msg.chat.id);
+});
+bot.onText(/\/history/, (msg) => {
+  if (!isOwner(msg)) return;
+  if (!isLoggedIn()) return bot.sendMessage(msg.chat.id, '❌ Age /login diye login korun.');
+  runHistory(msg.chat.id);
 });
 
 bot.on('message', (msg) => {
@@ -181,6 +207,14 @@ bot.on('callback_query', async (query) => {
     if (!isLoggedIn()) return bot.answerCallbackQuery(query.id, { text: 'Age login korun.' });
     bot.answerCallbackQuery(query.id, { text: 'Claim shuru hocche...' });
     runClaim(chatId, true);
+  } else if (action === 'confirm_inject') {
+    if (!isLoggedIn()) return bot.answerCallbackQuery(query.id, { text: 'Age login korun.' });
+    bot.answerCallbackQuery(query.id, { text: 'Injection shuru hocche...' });
+    runConfirm(chatId);
+  } else if (action === 'history') {
+    if (!isLoggedIn()) return bot.answerCallbackQuery(query.id, { text: 'Age login korun.' });
+    bot.answerCallbackQuery(query.id, { text: 'Order history...' });
+    runHistory(chatId);
   } else if (action === 'status') sendStatus(chatId);
   bot.answerCallbackQuery(query.id);
 });
@@ -247,7 +281,7 @@ async function runClaim(chatId, manual) {
   try {
     send('⏳ Site theke info nicchi...');
     const info = await apiGetInfo();
-    if (!info) { throw new Error('API response failed'); }
+    if (!info) throw new Error('API response failed');
 
     const u = info.userinfo || {};
     if (u.username && u.username !== creds.name) {
@@ -269,40 +303,138 @@ async function runClaim(chatId, manual) {
       send(`⏳ Profit ($${profit}) claim korchi...`);
       const claimRes = await apiClaimProfit();
       if (!claimRes.success) throw new Error('Claim profit failed: ' + claimRes.msg);
-      send(`✅ Profit claimed!`);
+      lastClaimStatus = '✅ Profit claimed';
+      send(`✅ *Profit claimed!*
+💰 Amount: $${profit}`);
     } else {
+      lastClaimStatus = 'ℹ️ Kono profit nei';
       send(`ℹ️ Kono profit claim kora jay na.`);
     }
 
-    const investAmount = balance > 10 ? balance : 10;
-    send(`⏳ New order create korchi ($${investAmount}, 3h)...`);
-    const orderRes = await apiCreateOrder(investAmount);
-    if (!orderRes.success) {
-      if (orderRes.msg.includes('1027') || orderRes.msg.includes('Injection failed')) {
-        throw new Error('Injection failed. Balance thik ase?');
-      }
-      throw new Error('Order failed: ' + orderRes.msg);
-    }
-
     lastClaimTime = new Date();
-    nextClaimTime = new Date(Date.now() + CLAIM_INTERVAL_MS);
-    creds.nextClaimAt = nextClaimTime.toISOString();
-    saveCredentials(creds);
-    lastClaimStatus = '✅ Success';
 
-    send(`✅ *Claim & Reinvest successful!*
-💰 Invested: $${investAmount}
-⏱ Next claim: ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
-
-    if (autoClaimOn) scheduleNext();
+    // After claim, show confirm injection button
+    const confirmBtns = {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '✅ Confirm Injection', callback_data: 'confirm_inject' }],
+          [{ text: '📊 Status', callback_data: 'status' }]
+        ]
+      }
+    };
+    send(`Ekhon injection nite chaile *Confirm Injection* button e click korun.`, confirmBtns);
 
   } catch (err) {
     lastClaimTime = new Date();
     lastClaimStatus = `❌ ${err.message}`;
     send(`❌ Error: ${err.message}`);
-    if (autoClaimOn) scheduleNext();
   } finally {
     isClaiming = false;
+  }
+}
+
+async function runConfirm(chatId) {
+  if (!isLoggedIn()) return bot.sendMessage(chatId, '❌ Age /login diye login korun.');
+  if (isClaiming) return bot.sendMessage(chatId, '⏳ Age injection shesh hok, wait korun.');
+  isClaiming = true;
+  const send = (t) => bot.sendMessage(chatId, t);
+
+  try {
+    send('⏳ Info nicchi...');
+    const info = await apiGetInfo();
+    if (!info) throw new Error('API response failed');
+
+    const u = info.userinfo || {};
+    const balance = Number(u.available_balance || 0);
+
+    // Step 1: PLUS+ strategy with $50
+    if (balance < 50) throw new Error(`Balance kom ($${balance}). 50 dollar lagbe PLUS+ er jonno.`);
+
+    send(`⏳ Step 1/2: PLUS+ create korchi $50...`);
+    const order1 = await apiCreateOrder(2, 50, 0); // type=2 (PLUS+), minuteIndex=0 (3h)
+    if (!order1.success) throw new Error('PLUS+ injection failed: ' + order1.msg);
+
+    // Step 2: Regular 3h with remaining balance
+    const remaining = balance - 50;
+    if (remaining > 0) {
+      send(`⏳ Step 2/2: 3H create korchi $${remaining}...`);
+      const order2 = await apiCreateOrder(0, remaining, 0); // type=0 (regular), minuteIndex=0 (3h)
+      if (!order2.success) throw new Error('3H injection failed: ' + order2.msg);
+    } else {
+      send(`ℹ️ Balance: $${balance}, remaining $0. Step 2 skip kora hocche.`);
+    }
+
+    lastClaimTime = new Date();
+    lastClaimStatus = '✅ Injection done';
+
+    // Try to get exact next claim time from active deals
+    let nextTime = new Date(Date.now() + CLAIM_INTERVAL_MS);
+    try {
+      const dealRes = await apiGetDealList(1, 5, 2);
+      if (dealRes.success && dealRes.data?.list?.length) {
+        const activeOrders = dealRes.data.list.filter(o => o.status === 1);
+        if (activeOrders.length) {
+          // Use the sell_time (end time) if available
+          for (const o of activeOrders) {
+            if (o.sell_time) {
+              const t = new Date(o.sell_time);
+              if (t > Date.now() && t < nextTime) nextTime = t;
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
+    nextClaimTime = nextTime;
+    creds.nextClaimAt = nextClaimTime.toISOString();
+    saveCredentials(creds);
+
+    send(`✅ *Injection successful!*
+━━━━━━━━━━━━━━━━
+➕ PLUS+: $50 (3H)
+➕ Regular: $${remaining > 0 ? remaining : 0} (3H)
+━━━━━━━━━━━━━━━━
+⏱ Next claim: ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
+
+  } catch (err) {
+    lastClaimStatus = `❌ ${err.message}`;
+    send(`❌ Error: ${err.message}`);
+  } finally {
+    isClaiming = false;
+  }
+}
+
+async function runHistory(chatId) {
+  if (!isLoggedIn()) return bot.sendMessage(chatId, '❌ Age /login diye login korun.');
+  try {
+    const res = await apiGetDealList(1, 10, 2);
+    if (!res.success || !res.data?.list?.length) {
+      return bot.sendMessage(chatId, '📖 Kono order history nei.', mainMenu());
+    }
+    const lines = ['📖 *Order History (Active/Recent)*'];
+    for (const order of res.data.list) {
+      const amount = Number(order.amount || order.price || 0);
+      const type = ['Regular', 'Closed', 'PLUS+', 'Phoenix'][order.type] || `Type ${order.type}`;
+      const status = order.status === 1 ? '✅ Active' : order.status === 2 ? '⏳ Pending' : '✅ Completed';
+      const orderSn = order.ordersn || order.orderNo || 'N/A';
+      let endTimeStr = '';
+      if (order.sell_time) {
+        const t = new Date(order.sell_time);
+        endTimeStr = `\n⌛ Ends: ${t.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`;
+      } else if (order.end_time) {
+        const t = new Date(order.end_time);
+        endTimeStr = `\n⌛ Ends: ${t.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`;
+      }
+      lines.push(`
+━━━━━━━━━━━━━━━━
+📌 #${orderSn.toString().slice(-8)}
+💵 ${type} | 💰 $${amount}
+📊 ${status}${endTimeStr}`);
+    }
+    lines.push(`\n━━━━━━━━━━━━━━━━\n📱 Total: ${res.data.list.length} orders`);
+    bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown', ...mainMenu() });
+  } catch (e) {
+    bot.sendMessage(chatId, `❌ History error: ${e.message}`, mainMenu());
   }
 }
 
