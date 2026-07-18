@@ -8,7 +8,10 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const OWNER_ID = process.env.OWNER_ID;
 const COUNTRY_CODE = process.env.COUNTRY_CODE || '880';
 const API_BASE = 'https://api.zenquantai.com/api';
-const CLAIM_INTERVAL_MS = 3 * 60 * 60 * 1000;
+
+// 3 hours 2 minutes (2 min buffer so we never call before the order actually matures)
+const BUFFER_MS = 2 * 60 * 1000;
+const CLAIM_INTERVAL_MS = 3 * 60 * 60 * 1000 + BUFFER_MS;
 
 const api = axios.create({ baseURL: API_BASE });
 let authToken = null;
@@ -91,7 +94,6 @@ async function apiGetDealList(page, size, type) {
     if (type !== undefined && type !== null) params.type = type;
     const res = await api.get('/getDealList', { params });
     const raw = res.data;
-    // dump raw for debugging
     let list = null;
     if (raw?.success && Array.isArray(raw?.data?.list)) list = raw.data.list;
     else if (raw?.success && Array.isArray(raw?.data)) list = raw.data;
@@ -254,8 +256,8 @@ function turnOn(chatId) {
   autoClaimOn = true;
   creds.autoClaimOn = true;
   saveCredentials(creds);
-  bot.sendMessage(chatId, '🟢 Auto Claim ON. Prothom claim ekhoni shuru hocche...', mainMenu());
-  runClaim(chatId, false);
+  bot.sendMessage(chatId, '🟢 Auto Claim ON. Prothom cycle (claim + confirm injection) ekhoni shuru hocche...', mainMenu());
+  autoCycle(chatId);
   scheduleNext();
 }
 
@@ -270,9 +272,9 @@ function scheduleNext() {
   if (!autoClaimOn) return;
   if (nextClaimTime) {
     const delay = Math.max(0, nextClaimTime.getTime() - Date.now());
-    claimTimer = setTimeout(() => { runClaim(OWNER_ID, false); scheduleNext(); }, delay);
+    claimTimer = setTimeout(() => { autoCycle(OWNER_ID); scheduleNext(); }, delay);
   } else {
-    claimTimer = setTimeout(() => { runClaim(OWNER_ID, false); scheduleNext(); }, CLAIM_INTERVAL_MS);
+    claimTimer = setTimeout(() => { autoCycle(OWNER_ID); scheduleNext(); }, CLAIM_INTERVAL_MS);
   }
 }
 
@@ -281,7 +283,16 @@ if (autoClaimOn && isLoggedIn() && nextClaimTime) {
   scheduleNext();
 }
 
-async function runClaim(chatId, manual) {
+// Full unattended cycle: claim profit -> wait a moment -> confirm injection.
+// Used by the scheduler and by "Auto Claim: ON" so nobody has to tap the
+// Confirm Injection button by hand.
+async function autoCycle(chatId) {
+  await runClaim(chatId, false, true);
+  await new Promise((r) => setTimeout(r, 5000)); // small buffer before re-injecting
+  await runConfirm(chatId, true);
+}
+
+async function runClaim(chatId, manual, isAuto) {
   if (!isLoggedIn()) return bot.sendMessage(chatId, '❌ Age /login diye login korun.');
   if (isClaiming) return bot.sendMessage(chatId, '⏳ Ager claim ekhono cholche, wait korun.');
   isClaiming = true;
@@ -308,6 +319,13 @@ async function runClaim(chatId, manual) {
 📦 Total: $${total}
 💵 Claimable Profit: $${profit}`);
 
+    if (profit === 0) {
+      // Debug dump so we can see the real field names from the API and fix
+      // the profit calculation if it's wrong.
+      const rawU = JSON.stringify(u).substring(0, 900);
+      send(`🔍 Debug (profit $0 dekhale eta check koro):\n\`${rawU.replace(/[\`]/g, '')}\``);
+    }
+
     if (profit > 0) {
       send(`⏳ Profit ($${profit}) claim korchi...`);
       const claimRes = await apiClaimProfit();
@@ -322,16 +340,19 @@ async function runClaim(chatId, manual) {
 
     lastClaimTime = new Date();
 
-    // After claim, show confirm injection button
-    const confirmBtns = {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '✅ Confirm Injection', callback_data: 'confirm_inject' }],
-          [{ text: '📊 Status', callback_data: 'status' }]
-        ]
-      }
-    };
-    send(`Ekhon injection nite chaile *Confirm Injection* button e click korun.`, confirmBtns);
+    if (isAuto) {
+      send(`🔁 Auto mode: ekhon nijer theke *Confirm Injection* cholbe...`);
+    } else {
+      const confirmBtns = {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '✅ Confirm Injection', callback_data: 'confirm_inject' }],
+            [{ text: '📊 Status', callback_data: 'status' }]
+          ]
+        }
+      };
+      send(`Ekhon injection nite chaile *Confirm Injection* button e click korun.`, confirmBtns);
+    }
 
   } catch (err) {
     lastClaimTime = new Date();
@@ -342,7 +363,7 @@ async function runClaim(chatId, manual) {
   }
 }
 
-async function runConfirm(chatId) {
+async function runConfirm(chatId, isAuto) {
   if (!isLoggedIn()) return bot.sendMessage(chatId, '❌ Age /login diye login korun.');
   if (isClaiming) return bot.sendMessage(chatId, '⏳ Age injection shesh hok, wait korun.');
   isClaiming = true;
@@ -356,27 +377,24 @@ async function runConfirm(chatId) {
     const u = info.userinfo || {};
     const balance = Number(u.available_balance || 0);
 
-    // Step 1: PLUS+ strategy with $50
-    if (balance < 50) throw new Error(`Balance kom ($${balance}). 50 dollar lagbe PLUS+ er jonno.`);
+    if (balance < 50) {
+      // Not enough balance yet — this is normal right after a $0 profit claim.
+      // Just re-arm the schedule so the next attempt happens on time.
+      lastClaimStatus = `ℹ️ Balance kom ($${balance}), injection skip`;
+      nextClaimTime = new Date(Date.now() + CLAIM_INTERVAL_MS);
+      creds.nextClaimAt = nextClaimTime.toISOString();
+      saveCredentials(creds);
+      send(`ℹ️ Balance kom ($${balance}). 50 dollar na hole PLUS+ injection hobe na. পরের চেষ্টা: ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
+      return;
+    }
 
-    send(`⏳ Step 1/2: PLUS+ create korchi $50...`);
+    send(`⏳ PLUS+ injection create korchi $50...`);
     const order1 = await apiCreateOrder(2, 50, 0); // type=2 (PLUS+), minuteIndex=0 (3h)
     if (!order1.success) throw new Error('PLUS+ injection failed: ' + order1.msg);
-
-    // Step 2: Regular 3h with remaining balance
-    const remaining = balance - 50;
-    if (remaining > 0) {
-      send(`⏳ Step 2/2: 3H create korchi $${remaining}...`);
-      const order2 = await apiCreateOrder(0, remaining, 0); // type=0 (regular), minuteIndex=0 (3h)
-      if (!order2.success) throw new Error('3H injection failed: ' + order2.msg);
-    } else {
-      send(`ℹ️ Balance: $${balance}, remaining $0. Step 2 skip kora hocche.`);
-    }
 
     lastClaimTime = new Date();
     lastClaimStatus = '✅ Injection done';
 
-    // Try to get exact next claim time from active deals
     let nextTime = new Date(Date.now() + CLAIM_INTERVAL_MS);
     try {
       const dealRes = await apiGetDealList(1, 5, 0);
@@ -385,8 +403,8 @@ async function runConfirm(chatId) {
         for (const o of activeOrders) {
           const endField = o.sell_time || o.end_time || o.complete_time;
           if (endField) {
-            const t = new Date(endField);
-            if (t > Date.now() && (!nextTime || t < nextTime)) nextTime = t;
+            const t = new Date(new Date(endField).getTime() + BUFFER_MS);
+            if (t > Date.now() && t < nextTime) nextTime = t;
           }
         }
       }
@@ -399,12 +417,17 @@ async function runConfirm(chatId) {
     send(`✅ *Injection successful!*
 ━━━━━━━━━━━━━━━━
 ➕ PLUS+: $50 (3H)
-➕ Regular: $${remaining > 0 ? remaining : 0} (3H)
 ━━━━━━━━━━━━━━━━
 ⏱ Next claim: ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
 
   } catch (err) {
     lastClaimStatus = `❌ ${err.message}`;
+    // Even on failure, keep the cycle alive so it retries in 3h2m
+    if (isAuto && !nextClaimTime) {
+      nextClaimTime = new Date(Date.now() + CLAIM_INTERVAL_MS);
+      creds.nextClaimAt = nextClaimTime.toISOString();
+      saveCredentials(creds);
+    }
     send(`❌ Error: ${err.message}`);
   } finally {
     isClaiming = false;
@@ -414,11 +437,9 @@ async function runConfirm(chatId) {
 async function runHistory(chatId) {
   if (!isLoggedIn()) return bot.sendMessage(chatId, '❌ Age /login diye login korun.');
   try {
-    // Call deal list API directly and dump full response for debugging
     const res = await api.get('/getDealList', { params: { page: 1, size: 20 } });
     const rawStr = JSON.stringify(res.data).substring(0, 600);
 
-    // Try various response paths
     const body = res.data;
     let orders = [];
     if (body?.data?.list) orders = body.data.list;
@@ -436,7 +457,6 @@ async function runHistory(chatId) {
     }
 
     const lines = [`📖 *Order History*`];
-    // Dump first order fields
     const first = orders[0];
     if (first) {
       for (const [k, v] of Object.entries(first)) {
@@ -476,7 +496,8 @@ async function runHistory(chatId) {
     lines.push(`\n━━━━━━━━━━━━━━━━\n📱 Total: ${orders.length} orders`);
     bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown', ...mainMenu() });
   } catch (e) {
-    bot.sendMessage(chatId, `❌ History error: ${e.message}`, mainMenu());
+    const rawErr = e.response?.data ? JSON.stringify(e.response.data).substring(0, 500) : 'no response body';
+    bot.sendMessage(chatId, `❌ History error: ${e.message}\n🔍 Raw: \`${rawErr.replace(/[\`]/g, '')}\``, mainMenu());
   }
 }
 
