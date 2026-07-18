@@ -453,12 +453,14 @@ async function runHistory(chatId) {
     }
 
     const lines = [`📖 *Order History (${source})*`];
-    // Debug: show raw fields for first order
-    const debugOrder = orders[0];
-    if (debugOrder) {
-      const keys = Object.keys(debugOrder).filter(k => !k.startsWith('_'));
-      const vals = keys.map(k => `${k}=${JSON.stringify(debugOrder[k])}`).join('\n');
-      lines.push(`\n⚙️ Raw Data:\n${vals}`);
+    // Debug: show raw fields (safe from Markdown)
+    const dbg = orders[0];
+    if (dbg) {
+      const keys = Object.keys(dbg).filter(k => !k.startsWith('_'));
+      for (const k of keys) {
+        const v = typeof dbg[k] === 'object' ? JSON.stringify(dbg[k]) : String(dbg[k]);
+        lines.push(`⚙️ ${k}: ${v.substring(0, 80)}`);
+      }
     }
     for (const order of orders) {
       const amount = Number(order.amount || order.price || order.money || 0);
