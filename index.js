@@ -87,19 +87,27 @@ api.interceptors.request.use(config => {
 
 async function apiGetProfile() {
   if (!authToken) return null;
-  try {
-    const res = await api.post('/get_info', {});
-    if (res.data && res.data.success) {
-      return res.data.nickname || res.data.account || res.data.username || null;
-    }
-    const res2 = await api.get('/getUserLevelInfo');
-    if (res2.data && res2.data.success) {
-      return res2.data.nickname || res2.data.account || res2.data.username || null;
-    }
-    return null;
-  } catch (_) {
-    return null;
+  const endpoints = [
+    () => api.post('/get_info', {}),
+    () => api.get('/getDealInfo'),
+    () => api.post('/getIndexData', {}),
+    () => api.get('/getUserLevelInfo'),
+  ];
+  for (const ep of endpoints) {
+    try {
+      const res = await ep();
+      const d = res.data;
+      if (d && d.success) {
+        const name = d.nickname || d.account || d.username
+          || d.user?.nickname || d.user?.account || d.user?.username
+          || d.data?.nickname || d.data?.account || d.data?.username
+          || d.userLevel?.nickname
+          || null;
+        if (name) return name;
+      }
+    } catch (_) {}
   }
+  return null;
 }
 
 async function apiClaim() {
@@ -195,12 +203,23 @@ bot.on('message', (msg) => {
         creds.password = password;
         creds.token = result.token;
         authToken = result.token;
-        const name = await apiGetProfile();
-        if (name) creds.name = name;
+        let msgText = '✅ Login successful!';
+        try {
+          const name = await apiGetProfile();
+          if (name) {
+            creds.name = name;
+            msgText += `\n👤 Name: ${name}`;
+          } else {
+            // Debug - try raw API call
+            try {
+              const debug = await api.post('/get_info', {});
+              msgText += `\n🐛 API raw: ${JSON.stringify(debug.data).slice(0, 300)}`;
+            } catch (_) {}
+          }
+        } catch (e) {
+          msgText += `\n⚠️ Name fetch error: ${e.message}`;
+        }
         saveCredentials(creds);
-        const msgText = creds.name
-          ? `✅ Login successful!\n👤 Name: ${creds.name}`
-          : '✅ Login successful!';
         bot.sendMessage(msg.chat.id, msgText, mainMenu());
       } else {
         bot.sendMessage(msg.chat.id, `❌ Login failed: ${result.error}`, mainMenu());
