@@ -85,40 +85,20 @@ async function apiCreateOrder(type, price, minuteIndex) {
   } catch (e) { return { success: false, msg: e.response?.data?.msg || e.message }; }
 }
 
-function extractList(res) {
-  if (!res || !res.data) return null;
-  const d = res.data;
-  if (d.success === false) return null;
-  // Try common response formats
-  let list = d.data?.list || d.data?.records || d.list || d.records || d.data;
-  if (Array.isArray(list)) return list;
-  if (list && Array.isArray(list.list)) return list.list;
-  if (list && Array.isArray(list.records)) return list.records;
-  return null;
-}
-
 async function apiGetDealList(page, size, type) {
   try {
-    const res = await api.get('/getDealList', { params: { page: page || 1, size: size || 20, type: type ?? 2 } });
-    const list = extractList(res);
-    return { success: !!list, data: list || [], msg: res.data?.msg || '' };
-  } catch (e) { return { success: false, data: [], msg: e.message }; }
-}
-
-async function apiGetDealLogs(page, size) {
-  try {
-    const res = await api.get('/getDealLogs', { params: { page: page || 1, size: size || 20 } });
-    const list = extractList(res);
-    return { success: !!list, data: list || [], msg: res.data?.msg || '' };
-  } catch (e) { return { success: false, data: [], msg: e.message }; }
-}
-
-async function apiOtherHistory(page, size, type) {
-  try {
-    const res = await api.post('/otherHistory', { page: page || 1, size: size || 20, ...(type !== undefined && { type }) });
-    const list = extractList(res);
-    return { success: !!list, data: list || [], msg: res.data?.msg || '' };
-  } catch (e) { return { success: false, data: [], msg: e.message }; }
+    const params = { page: page || 1, size: size || 20 };
+    if (type !== undefined && type !== null) params.type = type;
+    const res = await api.get('/getDealList', { params });
+    const raw = res.data;
+    // dump raw for debugging
+    let list = null;
+    if (raw?.success && Array.isArray(raw?.data?.list)) list = raw.data.list;
+    else if (raw?.success && Array.isArray(raw?.data)) list = raw.data;
+    else if (raw?.success && Array.isArray(raw?.list)) list = raw.list;
+    else if (Array.isArray(raw?.data?.records)) list = raw.data.records;
+    return { success: !!list, data: list || [], raw, msg: raw?.msg || '' };
+  } catch (e) { return { success: false, data: [], raw: null, msg: e.message }; }
 }
 
 async function apiGetDealInfo() {
@@ -435,25 +415,29 @@ async function runHistory(chatId) {
   if (!isLoggedIn()) return bot.sendMessage(chatId, '❌ Age /login diye login korun.');
   try {
     let orders = null;
-    let source = '';
+    let rawDump = '';
     // Try multiple endpoints
-    for (const attempt of [
-      async () => { const r = await apiGetDealList(1, 20, 0); return { d: r.data, s: 'active(0)' }; },
-      async () => { const r = await apiGetDealList(1, 20, 1); return { d: r.data, s: 'history(1)' }; },
-      async () => { const r = await apiGetDealList(1, 20, 2); return { d: r.data, s: 'all(2)' }; },
-      async () => { const r = await apiOtherHistory(1, 20, 0); return { d: r.data, s: 'otherHistory' }; },
-      async () => { const r = await apiGetDealLogs(1, 20); return { d: r.data, s: 'dealLogs' }; },
-    ]) {
-      const { d, s } = await attempt();
-      if (d && d.length > 0) { orders = d; source = s; break; }
+    const attempts = [
+      { fn: () => apiGetDealList(1, 20), label: 'default(2)' },
+      { fn: () => apiGetDealList(1, 20, 0), label: 'type0' },
+      { fn: () => apiGetDealList(1, 20, 1), label: 'type1' },
+    ];
+    for (const { fn, label } of attempts) {
+      const res = await fn();
+      if (res.success && res.data.length) { orders = res.data; break; }
+      if (res.raw && !rawDump) {
+        rawDump = JSON.stringify(res.raw).substring(0, 300);
+      }
     }
 
     if (!orders || !orders.length) {
-      return bot.sendMessage(chatId, '📖 Kono order history nei.', mainMenu());
+      let msg = '📖 Kono order history nei.';
+      if (rawDump) msg += `\n\n⚙️ Raw response:\n${rawDump.replace(/[_*[\]()~`>#+=|{}.!]/g, '\\$&')}`;
+      return bot.sendMessage(chatId, msg, { parse_mode: 'Markdown', ...mainMenu() });
     }
 
-    const lines = [`📖 *Order History (${source})*`];
-    // Debug: show raw fields (safe from Markdown)
+    const lines = [`📖 *Order History*`];
+    // Show raw fields of first order for debugging
     const dbg = orders[0];
     if (dbg) {
       const keys = Object.keys(dbg).filter(k => !k.startsWith('_'));
