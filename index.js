@@ -88,6 +88,13 @@ async function apiCreateOrder(type, price, minuteIndex) {
   } catch (e) { return { success: false, msg: e.response?.data?.msg || e.message }; }
 }
 
+async function apiGetDealDetail(ordersn, type) {
+  try {
+    const res = await api.get('/getDealDetail', { params: { ordersn, type: type || 0 } });
+    return { success: !!res.data?.success, data: res.data?.data || res.data, raw: res.data, msg: res.data?.msg || '' };
+  } catch (e) { return { success: false, data: null, raw: null, msg: e.message }; }
+}
+
 async function apiGetDealList(page, size, type) {
   try {
     const params = { page: page || 1, size: size || 20 };
@@ -397,10 +404,30 @@ async function runConfirm(chatId, isAuto) {
 
     let nextTime = new Date(Date.now() + CLAIM_INTERVAL_MS);
     try {
+      // Try to get exact end time from the order detail
       const dealRes = await apiGetDealList(1, 5, 0);
       if (dealRes.success && dealRes.data.length) {
-        const activeOrders = dealRes.data.filter(o => o.status === 1 || o.status === 'executing');
-        for (const o of activeOrders) {
+        for (const o of dealRes.data) {
+          // First try to fetch detailed info for this order
+          if (o.ordersn || o.orderNo || o.orderno) {
+            const sn = o.ordersn || o.orderNo || o.orderno;
+            const detailRes = await apiGetDealDetail(sn, 0);
+            if (detailRes.success && detailRes.data) {
+              const full = detailRes.data;
+              // Show raw debug for the first order
+              const rawDbg = JSON.stringify(full).substring(0, 400);
+              send(`🔍 Order detail: ${rawDbg}`);
+              // Find end time in full detail
+              const endField = ['sell_time','end_time','complete_time','finish_time','income_time','redeem_time','endTime','sellTime']
+                .map(f => full[f]).find(v => v);
+              if (endField) {
+                const t = new Date(new Date(endField).getTime() + BUFFER_MS);
+                if (t > Date.now() && t < nextTime) nextTime = t;
+              }
+              break;
+            }
+          }
+          // Fallback: check order-level time fields
           const endField = ['sell_time','end_time','complete_time','finish_time','income_time','redeem_time','endTime','sellTime']
             .map(f => o[f]).find(v => v);
           if (endField) {
@@ -467,6 +494,18 @@ async function runHistory(chatId) {
     }
 
     const lines = [];
+    // Try to fetch detailed info for the first order
+    const first = orders[0];
+    if (first) {
+      const sn = first.ordersn || first.orderNo || first.orderno || first.sn || '';
+      if (sn) {
+        try {
+          const detailRes = await api.get('/getDealDetail', { params: { ordersn: sn, type: 0 } });
+          const detailStr = JSON.stringify(detailRes.data).substring(0, 600);
+          lines.push('📖 *Order Detail:* ' + detailStr);
+        } catch (_) {}
+      }
+    }
     for (const [idx, order] of orders.entries()) {
       if (idx === 0) {
         // Dump all fields of first order
@@ -474,7 +513,7 @@ async function runHistory(chatId) {
           const val = typeof v === 'object' ? JSON.stringify(v).substring(0, 40) : String(v).substring(0, 40);
           return `${k}=${val}`;
         }).join(', ');
-        lines.push('📖 *Orders* | ' + fields);
+        lines.push('📖 *Fields* | ' + fields);
       }
       const amount = Number(order.amount || order.price || order.money || 0);
       const t = ['Regular', 'Closed', 'PLUS+', 'Phoenix'][order.type] || `T${order.type}`;
