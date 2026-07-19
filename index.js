@@ -401,7 +401,8 @@ async function runConfirm(chatId, isAuto) {
       if (dealRes.success && dealRes.data.length) {
         const activeOrders = dealRes.data.filter(o => o.status === 1 || o.status === 'executing');
         for (const o of activeOrders) {
-          const endField = o.sell_time || o.end_time || o.complete_time;
+          const endField = ['sell_time','end_time','complete_time','finish_time','income_time','redeem_time','endTime','sellTime']
+            .map(f => o[f]).find(v => v);
           if (endField) {
             const t = new Date(new Date(endField).getTime() + BUFFER_MS);
             if (t > Date.now() && t < nextTime) nextTime = t;
@@ -438,66 +439,69 @@ async function runHistory(chatId) {
   if (!isLoggedIn()) return bot.sendMessage(chatId, '❌ Age /login diye login korun.');
   try {
     const res = await api.get('/getDealList', { params: { page: 1, size: 20 } });
-    const rawStr = JSON.stringify(res.data).substring(0, 600);
-
     const body = res.data;
+    // Dump raw response as plain text (no Markdown) so we always see it
+    const rawStr = JSON.stringify(body).substring(0, 800);
+
+    // Try all possible response paths
     let orders = [];
-    if (body?.data?.list) orders = body.data.list;
+    if (body?.success && Array.isArray(body?.data?.list)) orders = body.data.list;
+    else if (body?.success && Array.isArray(body?.data)) orders = body.data;
+    else if (body?.success && Array.isArray(body?.list)) orders = body.list;
+    else if (Array.isArray(body?.data?.list)) orders = body.data.list;
     else if (Array.isArray(body?.data)) orders = body.data;
     else if (Array.isArray(body?.list)) orders = body.list;
     else if (body?.data && typeof body.data === 'object') {
-      const vals = Object.values(body.data);
-      const arr = vals.find(v => Array.isArray(v));
-      if (arr) orders = arr;
-    }
-
-    if (!Array.isArray(orders)) orders = [];
-    if (!orders.length) {
-      return bot.sendMessage(chatId, `📖 History empty\n⚙️ \`${rawStr.replace(/[`]/g, '')}\``, { ...mainMenu() });
-    }
-
-    const lines = [`📖 *Order History*`];
-    const first = orders[0];
-    if (first) {
-      for (const [k, v] of Object.entries(first)) {
-        if (k.startsWith('_')) continue;
-        const val = typeof v === 'object' ? JSON.stringify(v).substring(0, 60) : String(v).substring(0, 60);
-        lines.push(` ${k}: ${val}`);
+      for (const v of Object.values(body.data)) {
+        if (Array.isArray(v)) { orders = v; break; }
       }
     }
-    for (const order of orders) {
+    // Some APIs return {code:200, data:{list:[]}} without "success"
+    if (!orders.length && body?.code === 200 && body?.data) {
+      if (Array.isArray(body.data.list)) orders = body.data.list;
+      else if (Array.isArray(body.data)) orders = body.data;
+    }
+
+    if (!orders.length) {
+      return bot.sendMessage(chatId, '📖 Raw API response:\n' + rawStr.substring(0, 900), { ...mainMenu() });
+    }
+
+    const lines = [];
+    for (const [idx, order] of orders.entries()) {
+      if (idx === 0) {
+        // Dump all fields of first order
+        const fields = Object.entries(order).map(([k, v]) => {
+          const val = typeof v === 'object' ? JSON.stringify(v).substring(0, 40) : String(v).substring(0, 40);
+          return `${k}=${val}`;
+        }).join(', ');
+        lines.push('📖 *Orders* | ' + fields);
+      }
       const amount = Number(order.amount || order.price || order.money || 0);
       const t = ['Regular', 'Closed', 'PLUS+', 'Phoenix'][order.type] || `T${order.type}`;
-      let status = '';
-      if (order.status === 1 || order.status === 'executing') status = '⚡ Active';
-      else if (order.status === 2 || order.status === 'redeeming') status = '⏳ Redeeming';
-      else if (order.status === 3 || order.status === 'completed') status = '✅ Done';
-      else if (order.status === 4 || order.status === 'stopped') status = '⏹ Stopped';
-      else status = `S${order.status}`;
-      const orderSn = order.ordersn || order.orderNo || order.orderno || order.sn || '';
-      let endTimeStr = '';
-      const endField = order.sell_time || order.end_time || order.complete_time || order.finish_time;
+      const statusMap = { 1: '⚡Active', 2: '⏳Redeem', 3: '✅Done', 4: '⏹Stop', executing: '⚡Active', completed: '✅Done' };
+      const status = statusMap[order.status] || `S${order.status}`;
+      const orderSn = (order.ordersn || order.orderNo || order.orderno || order.sn || '').toString().slice(-8);
+      // Try all possible end-time field names
+      const endField = ['sell_time', 'end_time', 'complete_time', 'finish_time', 'income_time', 'redeem_time', 'endTime', 'sellTime', 'completeTime']
+        .map(f => order[f]).find(v => v);
+      let endStr = '';
       if (endField) {
         const et = new Date(endField);
-        if (!isNaN(et)) endTimeStr = `\n⌛ Ends: ${et.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`;
+        if (!isNaN(et)) endStr = ' ⌛' + et.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' });
       }
-      const createField = order.create_time || order.add_time || order.buy_time || order.start_time;
+      const createField = ['create_time', 'add_time', 'buy_time', 'start_time', 'createTime', 'addTime'].map(f => order[f]).find(v => v);
       let createStr = '';
       if (createField) {
         const ct = new Date(createField);
-        if (!isNaN(ct)) createStr = `\n🕐 Created: ${ct.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`;
+        if (!isNaN(ct)) createStr = ' 🕐' + ct.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' });
       }
-      lines.push(`
-━━━━━━━━━━━━━━━━
-📌 ${orderSn.toString().slice(-8) || 'N/A'}
-💵 ${t} | 💰 $${amount}
-📊 ${status}${createStr}${endTimeStr}`);
+      lines.push(`#${orderSn} ${t} $${amount} ${status}${createStr}${endStr}`);
     }
-    lines.push(`\n━━━━━━━━━━━━━━━━\n📱 Total: ${orders.length} orders`);
+    lines.push(`\nTotal: ${orders.length} orders`);
     bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown', ...mainMenu() });
   } catch (e) {
-    const rawErr = e.response?.data ? JSON.stringify(e.response.data).substring(0, 500) : 'no response body';
-    bot.sendMessage(chatId, `❌ History error: ${e.message}\n🔍 Raw: \`${rawErr.replace(/[\`]/g, '')}\``, mainMenu());
+    const errBody = e.response?.data ? JSON.stringify(e.response.data).substring(0, 600) : e.message;
+    bot.sendMessage(chatId, '❌ History error: ' + errBody, mainMenu());
   }
 }
 
