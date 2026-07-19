@@ -515,11 +515,10 @@ async function runHistory(chatId) {
       }
     }
 
-    // Send all results to user
+    // Send all results to user (no Markdown to avoid parse errors from special chars in JSON)
     const msg = results.join('\n');
-    // Telegram has 4096 char limit — chunk if needed
     for (let i = 0; i < msg.length; i += 3500) {
-      await send('📖 *History Debug:*\n' + msg.substring(i, i + 3500), { parse_mode: 'Markdown' });
+      await send('📖 History Debug:\n' + msg.substring(i, i + 3500));
     }
 
     // Now try to parse the first successful GET /getDealList response for a nicer view
