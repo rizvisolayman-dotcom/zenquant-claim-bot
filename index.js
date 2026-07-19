@@ -88,8 +88,8 @@ async function refreshActiveOrder() {
             saveCredentials(creds);
             return;
           }
-          // Order finished (any status 2-6) but profit not claimed yet
-          if (st >= 2 && pf > 0 && is_recv === 0) {
+          // Order finished (status 2=Redeem, 3=Done) but profit not claimed yet
+          if ((st === 2 || st === 3) && pf > 0 && is_recv === 0) {
             hasActiveOrder = true;
             activeOrderCountdown = 0;
             nextClaimTime = new Date(Date.now() + BUFFER_MS);
@@ -548,11 +548,15 @@ async function runClaim(chatId, manual, isAuto) {
           for (const o of dealRes.data) {
             const pf = Number(o.profit || 0);
             const is_recv = Number(o.is_receive || 0);
-            if (pf > 0 && is_recv === 0) {
+            const st = Number(o.status || 0);
+            const cd = Number(o.receive_times || 0);
+            // Only claimable: status 1 (countdown done), 2 (Redeem), 3 (Done)
+            const claimable = (st === 1 && cd === 0) || st === 2 || st === 3;
+            if (pf > 0 && is_recv === 0 && claimable) {
               profit = pf;
               hasActiveOrder = true;
-              activeOrderCountdown = Number(o.receive_times || 0);
-              send(`🔍 Profit found via deal list: $${profit} (type=${t}, status=${o.status})`);
+              activeOrderCountdown = cd;
+              send(`🔍 Profit found via deal list: $${profit} (type=${t}, status=${st})`);
               break;
             }
           }
@@ -577,7 +581,15 @@ async function runClaim(chatId, manual, isAuto) {
       didClaim = true;
       send(`⏳ Profit ($${profit}) claim korchi...`);
       const claimRes = await apiClaimProfit();
-      if (!claimRes.success) throw new Error('Claim profit failed: ' + (claimRes.msg || JSON.stringify(claimRes.data).substring(0, 100)));
+      if (!claimRes.success) {
+        const errCode = claimRes.data?.code || '';
+        if (errCode === 1001) {
+          send(`⚠️ Profit detect hoyeche but claim kora jacchena (code 1001). Order ta valid na.`);
+          hasActiveOrder = false; activeOrderCountdown = 0;
+          didClaim = false;
+        }
+        throw new Error('Claim profit failed: ' + (claimRes.msg || JSON.stringify(claimRes.data).substring(0, 100)));
+      }
       hasActiveOrder = false; activeOrderCountdown = 0;
       lastClaimAmount = profit;
       lastActionStatus = `✅ Claimed $${profit}`;
