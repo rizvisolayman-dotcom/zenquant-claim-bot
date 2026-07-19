@@ -62,6 +62,32 @@ const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 function isOwner(msg) { return String(msg.chat.id) === String(OWNER_ID); }
 function isLoggedIn() { return !!(creds.phone && creds.password); }
 function maskPhone(p) { return p ? p.slice(0, 3) + '****' + p.slice(-2) : ''; }
+async function refreshActiveOrder() {
+  // API theke check kore dekhe kono active order ase ki na
+  if (!isLoggedIn()) return;
+  try {
+    const dealRes = await apiGetDealList(1, 3, 0);
+    if (dealRes.success && dealRes.data.length) {
+      for (const o of dealRes.data) {
+        if (Number(o.status) === 1) { // status=1 = Active
+          const cd = Number(o.receive_times || 0);
+          if (cd > 0) {
+            hasActiveOrder = true;
+            activeOrderCountdown = cd;
+            nextClaimTime = new Date(Date.now() + (cd * 1000) + BUFFER_MS);
+            creds.nextClaimAt = nextClaimTime.toISOString();
+            saveCredentials(creds);
+            return;
+          }
+        }
+      }
+    }
+    // Kono active order nei
+    hasActiveOrder = false;
+    activeOrderCountdown = 0;
+  } catch (_) {}
+}
+
 function formatCountdown(sec) {
   if (!sec || sec <= 0) return '0s';
   const h = Math.floor(sec / 3600);
@@ -157,7 +183,8 @@ function mainMenu() {
   return { reply_markup: { inline_keyboard: btns } };
 }
 
-bot.onText(/\/start/, (msg) => {
+bot.onText(/\/start/, async (msg) => {
+  await refreshActiveOrder();
   const lines = ['🤖 *ZenQuant Auto Claim Bot*', ''];
   if (isLoggedIn()) {
     lines.push('✅ *Login:* Active');
@@ -198,7 +225,7 @@ bot.onText(/\/help/, (msg) => {
 
 bot.onText(/\/login/, (msg) => { startLoginFlow(msg.chat.id); });
 bot.onText(/\/logout/, (msg) => { doLogout(msg.chat.id); });
-bot.onText(/\/status/, (msg) => { sendStatus(msg.chat.id); });
+bot.onText(/\/status/, (msg) => { sendStatus(msg.chat.id).catch(() => {}); });
 bot.onText(/\/claim/, (msg) => {
   if (!isLoggedIn()) return bot.sendMessage(msg.chat.id, '❌ Age /login diye login korun.');
   runClaim(msg.chat.id, true);
@@ -293,7 +320,7 @@ bot.on('callback_query', async (query) => {
       await bot.answerCallbackQuery(query.id, { text: 'Order history...' });
       return await runHistory(chatId);
     }
-    if (action === 'status') { sendStatus(chatId); return bot.answerCallbackQuery(query.id); }
+    if (action === 'status') { await sendStatus(chatId); return bot.answerCallbackQuery(query.id); }
     bot.answerCallbackQuery(query.id);
   } catch (e) {
     console.error('Callback query error:', e);
@@ -301,7 +328,8 @@ bot.on('callback_query', async (query) => {
   }
 });
 
-function sendStatus(chatId) {
+async function sendStatus(chatId) {
+  await refreshActiveOrder();
   const lines = ['📊 *Status*', ''];
   if (isLoggedIn()) {
     lines.push('✅ *Login:* Active');
@@ -341,16 +369,19 @@ function turnOn(chatId) {
   autoClaimChatId = chatId;
   creds.autoClaimOn = true;
   saveCredentials(creds);
-  // Check if there's an active order already running
-  if (hasActiveOrder && nextClaimTime && nextClaimTime > Date.now()) {
-    const remainingMs = Math.max(0, nextClaimTime.getTime() - Date.now());
-    const remainingSec = Math.floor(remainingMs / 1000);
-    bot.sendMessage(chatId, `🟢 Auto Claim ON. Active order ase, countdown: ${formatCountdown(remainingSec)} baki.`, mainMenu());
-  } else {
-    bot.sendMessage(chatId, '🟢 Auto Claim ON. Prothom cycle ekhoni shuru hocche...', mainMenu());
-    autoCycle(chatId);
-  }
-  scheduleNext();
+
+  // API theke active order check korbo (memory state reset hoye geleo)
+  refreshActiveOrder().then(() => {
+    if (hasActiveOrder && nextClaimTime && nextClaimTime > Date.now()) {
+      const remainingMs = Math.max(0, nextClaimTime.getTime() - Date.now());
+      const remainingSec = Math.floor(remainingMs / 1000);
+      bot.sendMessage(chatId, `🟢 Auto Claim ON. Active order ase, countdown: ${formatCountdown(remainingSec)} baki.`, mainMenu());
+    } else {
+      bot.sendMessage(chatId, '🟢 Auto Claim ON. Prothom cycle ekhoni shuru hocche...', mainMenu());
+      autoCycle(chatId);
+    }
+    scheduleNext();
+  });
 }
 
 function turnOff(chatId) {
@@ -419,21 +450,11 @@ async function runClaim(chatId, manual, isAuto) {
 💵 Claimable Profit: $${profit}`);
 
     if (profit === 0) {
-      // Check if an active order is still counting down
-      try {
-        const dealRes = await apiGetDealList(1, 1, 0);
-        if (dealRes.success && dealRes.data.length) {
-          const active = dealRes.data[0];
-          const cd = Number(active.receive_times || 0);
-          if (cd > 0) {
-            send(`⏳ Active order countdown: ${formatCountdown(cd)} baki. Profit claim korte ${formatCountdown(cd)} pore abar try korun.`);
-          } else {
-            send(`ℹ️ Kono profit claim kora jay na (profit $0).`);
-          }
-        } else {
-          send(`ℹ️ Kono profit claim kora jay na (profit $0).`);
-        }
-      } catch (_) {
+      // Refresh active order state from API
+      await refreshActiveOrder();
+      if (hasActiveOrder && activeOrderCountdown > 0) {
+        send(`⏳ Active order countdown: ${formatCountdown(activeOrderCountdown)} baki.`);
+      } else {
         send(`ℹ️ Kono profit claim kora jay na (profit $0).`);
       }
     }
