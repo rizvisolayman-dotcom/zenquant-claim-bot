@@ -484,52 +484,55 @@ async function runConfirm(chatId, isAuto) {
 async function runHistory(chatId) {
   if (!isLoggedIn()) return bot.sendMessage(chatId, '❌ Age /login diye login korun.');
   try {
-    const res = await api.get('/getDealList', { params: { page: 1, size: 20 } });
-    const body = res.data;
-    // Dump raw response as plain text (no Markdown) so we always see it
-    const rawStr = JSON.stringify(body).substring(0, 800);
+    // Try multiple endpoint configurations (GET + POST)
+    const attempts = [
+      () => api.get('/getDealList', { params: { page: 1, size: 20, type: 0 } }),
+      () => api.get('/getDealList', { params: { page: 1, size: 20, type: 1 } }),
+      () => api.get('/getDealList', { params: { page: 1, size: 20, type: 2 } }),
+      () => api.get('/getDealList', { params: { page: 1, size: 20 } }),
+      () => api.post('/getDealList', { page: 1, size: 20, type: 0 }),
+      () => api.post('/getDealList', { page: 1, size: 20 }),
+    ];
 
-    // Try all possible response paths
+    let body = null;
+    for (const fn of attempts) {
+      try {
+        const res = await fn();
+        const b = res.data;
+        if (b) {
+          body = b;
+          if (b.success || b.code === 200) break;
+        }
+      } catch (_) {}
+    }
+
+    const rawStr = JSON.stringify(body).substring(0, 1500);
     let orders = [];
-    if (body?.success && Array.isArray(body?.data?.list)) orders = body.data.list;
-    else if (body?.success && Array.isArray(body?.data)) orders = body.data;
-    else if (body?.success && Array.isArray(body?.list)) orders = body.list;
-    else if (Array.isArray(body?.data?.list)) orders = body.data.list;
-    else if (Array.isArray(body?.data)) orders = body.data;
-    else if (Array.isArray(body?.list)) orders = body.list;
-    else if (body?.data && typeof body.data === 'object') {
-      for (const v of Object.values(body.data)) {
-        if (Array.isArray(v)) { orders = v; break; }
-      }
-    }
-    // Some APIs return {code:200, data:{list:[]}} without "success"
-    if (!orders.length && body?.code === 200 && body?.data) {
-      if (Array.isArray(body.data.list)) orders = body.data.list;
-      else if (Array.isArray(body.data)) orders = body.data;
-    }
 
-    if (!orders.length) {
-      return bot.sendMessage(chatId, '📖 Raw API response:\n' + rawStr.substring(0, 900), { ...mainMenu() });
+    if (body) {
+      if (Array.isArray(body?.data?.list)) orders = body.data.list;
+      else if (Array.isArray(body?.data)) orders = body.data;
+      else if (Array.isArray(body?.list)) orders = body.list;
+      else if (Array.isArray(body?.records)) orders = body.records;
+      else if (body?.data && typeof body.data === 'object') {
+        for (const v of Object.values(body.data)) {
+          if (Array.isArray(v)) { orders = v; break; }
+        }
+      }
     }
 
     const lines = [];
-    // Try to fetch detailed info for the first order
-    const first = orders[0];
-    if (first) {
-      const sn = first.ordersn || first.orderNo || first.orderno || first.sn || '';
-      if (sn) {
-        try {
-          const detailRes = await api.get('/getDealDetail', { params: { ordersn: sn, type: 0 } });
-          const detailStr = JSON.stringify(detailRes.data).substring(0, 600);
-          lines.push('📖 *Order Detail:* ' + detailStr);
-        } catch (_) {}
-      }
+    lines.push('📖 *Raw API:* `' + rawStr.replace(/`/g, '').substring(0, 800) + '`');
+
+    if (!orders.length) {
+      lines.push('\nℹ️ Kono order nei.');
+      return bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown', ...mainMenu() });
     }
+
     for (const [idx, order] of orders.entries()) {
       if (idx === 0) {
-        // Dump all fields of first order
         const fields = Object.entries(order).map(([k, v]) => {
-          const val = typeof v === 'object' ? JSON.stringify(v).substring(0, 40) : String(v).substring(0, 40);
+          const val = typeof v === 'object' ? JSON.stringify(v).substring(0, 30) : String(v).substring(0, 30);
           return `${k}=${val}`;
         }).join(', ');
         lines.push('📖 *Fields* | ' + fields);
@@ -539,7 +542,6 @@ async function runHistory(chatId) {
       const statusMap = { 1: '⚡Active', 2: '⏳Redeem', 3: '✅Done', 4: '⏹Stop', executing: '⚡Active', completed: '✅Done' };
       const status = statusMap[order.status] || `S${order.status}`;
       const orderSn = (order.ordersn || order.orderNo || order.orderno || order.sn || '').toString().slice(-8);
-      // Try all possible end-time field names
       const endField = ['sell_time', 'end_time', 'complete_time', 'finish_time', 'income_time', 'redeem_time', 'endTime', 'sellTime', 'completeTime']
         .map(f => order[f]).find(v => v);
       let endStr = '';
@@ -559,7 +561,7 @@ async function runHistory(chatId) {
     bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown', ...mainMenu() });
   } catch (e) {
     console.error('runHistory error:', e);
-    const errBody = e.response?.data ? JSON.stringify(e.response.data).substring(0, 800) : e.message;
+    const errBody = e.response?.data ? JSON.stringify(e.response.data).substring(0, 1000) : e.message;
     bot.sendMessage(chatId, '❌ History error: ' + errBody, mainMenu());
   }
 }
