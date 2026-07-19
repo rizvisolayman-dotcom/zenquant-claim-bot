@@ -448,6 +448,10 @@ async function runClaim(chatId, manual, isAuto) {
     const balance = Number(u.available_balance || 0);
     const total = Number(u.total_balance || 0);
 
+    // Debug: show ALL userinfo fields so we know the real field names
+    const rawFields = JSON.stringify(u).substring(0, 800);
+    send(`🔍 Raw userinfo:\n${rawFields.replace(/[{}\"]/g, '')}`);
+
     send(`📊 *Account Info*
 👤 Name: ${u.username || creds.name || 'N/A'}
 💰 Balance: $${balance}
