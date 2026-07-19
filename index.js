@@ -28,6 +28,7 @@ let lastInjectionTime = null;    // last SUCCESSFUL injection time
 let lastClaimAmount = null;      // last SUCCESSFUL claim amount
 let isClaiming = false;
 let pendingLogin = {};
+let pendingAmount = {};
 let autoClaimChatId = null;
 let hasActiveOrder = false;      // true when an order is counting down
 let activeOrderCountdown = 0;    // receive_times from the latest active order
@@ -37,7 +38,7 @@ function loadCredentials() {
     if (fs.existsSync(CRED_FILE))
       return JSON.parse(fs.readFileSync(CRED_FILE, 'utf8'));
   } catch (e) { console.error('Credential load error:', e.message); }
-  return { phone: null, password: null, token: null, name: null, nextClaimAt: null, autoClaimOn: false };
+  return { phone: null, password: null, token: null, name: null, nextClaimAt: null, autoClaimOn: false, notifOn: true };
 }
 function saveCredentials(data) {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -184,14 +185,32 @@ async function apiGetDealInfo() {
   } catch (e) { return { success: false, data: null, msg: e.message }; }
 }
 
+async function apiGetProfitList() {
+  try {
+    const res = await api.get('/getProfitList', { params: { page: 1, size: 30 } });
+    return { success: !!res.data?.success, data: res.data?.data || res.data, raw: res.data, msg: res.data?.msg || '' };
+  } catch (e) { return { success: false, data: null, raw: null, msg: e.message }; }
+}
+
 function mainMenu() {
   const btns = [];
   if (isLoggedIn()) {
-    btns.push([{ text: autoClaimOn ? '🟢 Auto Claim: ON' : '🔴 Auto Claim: OFF', callback_data: 'toggle' }]);
-    btns.push([{ text: '⚡ Claim Profit', callback_data: 'claim_now' }]);
-    btns.push([{ text: '✅ Confirm Injection', callback_data: 'confirm_inject' }]);
-    btns.push([{ text: '📖 Order History', callback_data: 'history' }]);
-    btns.push([{ text: '📊 Status', callback_data: 'status' }]);
+    btns.push([
+      { text: autoClaimOn ? '🟢 Auto: ON' : '🔴 Auto: OFF', callback_data: 'toggle' },
+      { text: creds.notifOn !== false ? '🔔 Notif: ON' : '🔕 Notif: OFF', callback_data: 'notif_toggle' }
+    ]);
+    btns.push([
+      { text: '⚡ Claim', callback_data: 'claim_now' },
+      { text: '✅ Inject', callback_data: 'confirm_inject' }
+    ]);
+    btns.push([
+      { text: '💵 Set Amount', callback_data: 'set_amount' },
+      { text: '📊 Profit', callback_data: 'profit' }
+    ]);
+    btns.push([
+      { text: '📖 History', callback_data: 'history' },
+      { text: '📊 Status', callback_data: 'status' }
+    ]);
     btns.push([{ text: '🚪 Logout', callback_data: 'logout' }]);
   } else {
     btns.push([{ text: '🔑 Login Koro', callback_data: 'login_start' }]);
@@ -232,7 +251,8 @@ bot.onText(/\/help/, (msg) => {
     '/logout — Logout\n' +
     '/status — Account status + next claim time\n' +
     '/claim — Claim available profit\n' +
-    '/confirm — Confirm injection (PLUS+)\n' +
+    '/confirm — Inject PLUS+ (optional: /confirm 50)\n' +
+    '/profit — Profit history (last 30 days)\n' +
     '/history — Order history\n' +
     '/help — Ei message',
     { parse_mode: 'Markdown', ...mainMenu() }
@@ -246,9 +266,21 @@ bot.onText(/\/claim/, (msg) => {
   if (!isLoggedIn()) return bot.sendMessage(msg.chat.id, '❌ Age /login diye login korun.');
   runClaim(msg.chat.id, true);
 });
-bot.onText(/\/confirm/, (msg) => {
+bot.onText(/\/confirm ?(.+)?/, (msg, match) => {
   if (!isLoggedIn()) return bot.sendMessage(msg.chat.id, '❌ Age /login diye login korun.');
-  runConfirm(msg.chat.id);
+  const amount = match[1] ? parseFloat(match[1]) : null;
+  if (amount !== null && (isNaN(amount) || amount <= 0))
+    return bot.sendMessage(msg.chat.id, '❌ Sotik amount din (positive number).');
+  if (amount !== null) pendingAmount[msg.chat.id] = amount;
+  if (amount === null && !pendingAmount[msg.chat.id]) {
+    pendingAmount[msg.chat.id] = 'awaiting';
+    return bot.sendMessage(msg.chat.id, '💵 Koto amount inject korben? Type kore din (e.g. 50)\n\n🚫 Cancel korle "cancel" likhun.');
+  }
+  runConfirm(msg.chat.id, false, pendingAmount[msg.chat.id]);
+});
+bot.onText(/\/profit/, (msg) => {
+  if (!isLoggedIn()) return bot.sendMessage(msg.chat.id, '❌ Age /login diye login korun.');
+  runProfit(msg.chat.id);
 });
 bot.onText(/\/history/, (msg) => {
   if (!isLoggedIn()) return bot.sendMessage(msg.chat.id, '❌ Age /login diye login korun.');
@@ -257,6 +289,19 @@ bot.onText(/\/history/, (msg) => {
 
 bot.on('message', (msg) => {
   if (!msg.text || msg.text.startsWith('/')) return;
+  const text = msg.text.trim().toLowerCase();
+  // Handle manual amount input
+  if (pendingAmount[msg.chat.id] === 'awaiting') {
+    if (text === 'cancel') {
+      delete pendingAmount[msg.chat.id];
+      return bot.sendMessage(msg.chat.id, '🚫 Cancelled.', mainMenu());
+    }
+    const amt = parseFloat(msg.text.trim());
+    if (isNaN(amt) || amt <= 0)
+      return bot.sendMessage(msg.chat.id, '❌ Sotik amount din (positive number). Cancel korle "cancel" likhun.');
+    pendingAmount[msg.chat.id] = amt;
+    return runConfirm(msg.chat.id, false, amt);
+  }
   const state = pendingLogin[msg.chat.id];
   if (!state) return;
   if (state.step === 'phone') {
@@ -297,7 +342,7 @@ function doLogout(chatId) {
   autoClaimOn = false; autoClaimChatId = null; hasActiveOrder = false; activeOrderCountdown = 0;
   lastInjectionTime = null; lastClaimAmount = null;
   if (claimTimer) { clearTimeout(claimTimer); claimTimer = null; }
-  creds = { phone: null, password: null, token: null, name: null, nextClaimAt: null, autoClaimOn: false };
+  creds = { phone: null, password: null, token: null, name: null, nextClaimAt: null, autoClaimOn: false, notifOn: true };
   authToken = null; nextClaimTime = null;
   saveCredentials(creds);
   bot.sendMessage(chatId, '🚪 Logout hoyeche.', mainMenu());
@@ -329,7 +374,8 @@ bot.on('callback_query', async (query) => {
     if (action === 'confirm_inject') {
       if (!requireLogin()) return bot.answerCallbackQuery(query.id);
       await bot.answerCallbackQuery(query.id, { text: 'Injection shuru hocche...' });
-      return await runConfirm(chatId);
+      const amt = pendingAmount[chatId] && pendingAmount[chatId] !== 'awaiting' ? pendingAmount[chatId] : null;
+      return await runConfirm(chatId, false, amt);
     }
     if (action === 'history') {
       if (!requireLogin()) return bot.answerCallbackQuery(query.id);
@@ -337,6 +383,22 @@ bot.on('callback_query', async (query) => {
       return await runHistory(chatId);
     }
     if (action === 'status') { await sendStatus(chatId); return bot.answerCallbackQuery(query.id); }
+    if (action === 'notif_toggle') {
+      creds.notifOn = creds.notifOn !== false ? false : true;
+      saveCredentials(creds);
+      bot.sendMessage(chatId, creds.notifOn !== false ? '🔔 Notifications ON' : '🔕 Notifications OFF', mainMenu());
+      return bot.answerCallbackQuery(query.id);
+    }
+    if (action === 'set_amount') {
+      pendingAmount[chatId] = 'awaiting';
+      bot.sendMessage(chatId, '💵 Koto amount inject korben? Type kore din (e.g. 50)\n\n🚫 Cancel korle "cancel" likhun.');
+      return bot.answerCallbackQuery(query.id);
+    }
+    if (action === 'profit') {
+      if (!requireLogin()) return bot.answerCallbackQuery(query.id);
+      await bot.answerCallbackQuery(query.id, { text: 'Profit history...' });
+      return await runProfit(chatId);
+    }
     bot.answerCallbackQuery(query.id);
   } catch (e) {
     console.error('Callback query error:', e);
@@ -444,7 +506,10 @@ async function runClaim(chatId, manual, isAuto) {
   if (isClaiming) { bot.sendMessage(chatId, '⏳ Ager claim ekhono cholche, wait korun.'); return false; }
   isClaiming = true;
   let didClaim = false;
-  const send = (t) => bot.sendMessage(chatId, t);
+  const send = (t) => {
+    if (isAuto && creds.notifOn === false) return;
+    bot.sendMessage(chatId, t).catch(() => {});
+  };
 
   try {
     send('⏳ Site theke info nicchi...');
@@ -542,11 +607,15 @@ async function runClaim(chatId, manual, isAuto) {
   return didClaim;
 }
 
-async function runConfirm(chatId, isAuto) {
+async function runConfirm(chatId, isAuto, customAmount) {
   if (!isLoggedIn()) return bot.sendMessage(chatId, '❌ Age /login diye login korun.');
   if (isClaiming) return bot.sendMessage(chatId, '⏳ Age injection shesh hok, wait korun.');
   isClaiming = true;
-  const send = (t) => bot.sendMessage(chatId, t);
+  delete pendingAmount[chatId];
+  const send = (t) => {
+    if (isAuto && creds.notifOn === false) return;
+    bot.sendMessage(chatId, t).catch(() => {});
+  };
 
   try {
     send('⏳ Info nicchi...');
@@ -556,7 +625,7 @@ async function runConfirm(chatId, isAuto) {
     const u = info.userinfo || {};
     const balance = Number(u.available_balance || 0);
 
-    const amount = Math.floor(balance);
+    let amount = customAmount || Math.floor(balance);
 
     if (amount < 1) {
       hasActiveOrder = false; activeOrderCountdown = 0;
@@ -567,6 +636,11 @@ async function runConfirm(chatId, isAuto) {
       send(`ℹ️ Balance kom ($${balance}). 1 dollar na hole injection hobe na.
 🔜 পরের চেষ্টা: ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
       return;
+    }
+
+    if (customAmount && customAmount > balance) {
+      send(`⚠️ Custom amount ($${customAmount}) balance er cheye beshi! ${Math.floor(balance)} use korchi.`);
+      amount = Math.floor(balance);
     }
 
     send(`⏳ PLUS+ injection create korchi $${amount} (balance: $${balance})...`);
@@ -625,6 +699,41 @@ async function runConfirm(chatId, isAuto) {
 🔜 Next retry: ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
   } finally {
     isClaiming = false;
+  }
+}
+
+async function runProfit(chatId) {
+  if (!isLoggedIn()) return bot.sendMessage(chatId, '❌ Age /login diye login korun.');
+  const send = (t, o) => bot.sendMessage(chatId, t, o || {}).catch(() => {});
+  try {
+    send('⏳ Profit history fetch korchi...');
+    const res = await apiGetProfitList();
+    if (!res.success) throw new Error(res.msg || 'API failed');
+    const raw = res.data;
+    let list = [];
+    if (Array.isArray(raw)) list = raw;
+    else if (Array.isArray(raw?.list)) list = raw.list;
+    else if (Array.isArray(raw?.data)) list = raw.data;
+    else {
+      send('📊 Full API response:\n' + JSON.stringify(raw).substring(0, 3000), mainMenu());
+      return;
+    }
+    if (!list.length) return send('ℹ️ Kono profit history nei.', mainMenu());
+    const lines = ['📊 *Profit History (last 30 days)*'];
+    let total = 0;
+    for (const p of list) {
+      const profit = Number(p.profit || p.amount || p.money || 0);
+      const date = p.date || p.time || p.create_time || '';
+      const sn = (p.ordersn || p.orderNo || '').toString().slice(-8);
+      total += profit;
+      lines.push(`${date} ${sn ? '#'+sn : ''} $${profit.toFixed(2)}`);
+    }
+    lines.push(`━━━━━━━━━━━`);
+    lines.push(`💰 *Total: $${total.toFixed(2)}*`);
+    await send(lines.join('\n'), { parse_mode: 'Markdown', ...mainMenu() });
+  } catch (e) {
+    console.error('runProfit error:', e);
+    await send('❌ Profit history error: ' + (e.response?.data ? JSON.stringify(e.response.data).substring(0, 500) : e.message), mainMenu());
   }
 }
 
