@@ -705,6 +705,14 @@ async function runHistory(chatId) {
   }
 }
 
-process.on('unhandledRejection', (err) => console.error('UHR:', err.message));
-process.on('uncaughtException', (err) => console.error('UCE:', err.message));
+process.on('unhandledRejection', (err) => { console.error('UHR:', err.message); });
+process.on('uncaughtException', (err) => { console.error('UCE:', err.message); });
+
+// Self-ping every 10 min to prevent Render free tier spin-down
+const MY_URL = process.env.RENDER_EXTERNAL_URL || 'https://zenquant-claim-bot-srv.onrender.com';
+setInterval(() => {
+  axios.get(MY_URL).catch(() => {});
+  console.log('[ping]', new Date().toISOString());
+}, 10 * 60 * 1000);
+
 console.log('Bot v2 started.');
