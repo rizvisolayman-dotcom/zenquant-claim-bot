@@ -443,14 +443,34 @@ async function runClaim(chatId, manual, isAuto) {
       creds.name = u.username; saveCredentials(creds);
     }
 
-    const profit = Number(u.one_profit || 0) + Number(u.two_profit || 0) + Number(u.three_profit || 0)
-      + Number(u.recharge_one_profit || 0) + Number(u.recharge_two_profit || 0) + Number(u.recharge_three_profit || 0);
     const balance = Number(u.available_balance || 0);
     const total = Number(u.total_balance || 0);
 
-    // Debug: show ALL userinfo fields so we know the real field names
-    const rawFields = JSON.stringify(u).substring(0, 800);
-    send(`🔍 Raw userinfo:\n${rawFields.replace(/[{}\"]/g, '')}`);
+    // Profit check: userinfo fields + active order from deal list
+    let profit = Number(u.one_profit || 0) + Number(u.two_profit || 0) + Number(u.three_profit || 0)
+      + Number(u.recharge_one_profit || 0) + Number(u.recharge_two_profit || 0) + Number(u.recharge_three_profit || 0);
+
+    // If userinfo doesn't have profit fields, check active order's profit
+    if (profit === 0) {
+      await refreshActiveOrder();
+      if (hasActiveOrder) {
+        // Find profit from the active order
+        try {
+          for (const t of [0, 2, 1]) {
+            const dealRes = await apiGetDealList(1, 5, t);
+            if (dealRes.success && dealRes.data.length) {
+              for (const o of dealRes.data) {
+                if (Number(o.status) === 1 && Number(o.profit || 0) > 0) {
+                  profit = Number(o.profit);
+                  break;
+                }
+              }
+              if (profit > 0) break;
+            }
+          }
+        } catch (_) {}
+      }
+    }
 
     send(`📊 *Account Info*
 👤 Name: ${u.username || creds.name || 'N/A'}
@@ -458,29 +478,23 @@ async function runClaim(chatId, manual, isAuto) {
 📦 Total: $${total}
 💵 Claimable Profit: $${profit}`);
 
-    if (profit === 0) {
-      // Refresh active order state from API
-      await refreshActiveOrder();
-      if (hasActiveOrder && activeOrderCountdown > 0) {
-        send(`⏳ Active order countdown: ${formatCountdown(activeOrderCountdown)} baki.`);
-      } else {
-        send(`ℹ️ Kono profit claim kora jay na (profit $0).`);
-      }
+    if (hasActiveOrder && activeOrderCountdown > 0 && profit === 0) {
+      send(`⏳ Active order countdown: ${formatCountdown(activeOrderCountdown)} baki.`);
     }
 
     if (profit > 0) {
       didClaim = true;
       send(`⏳ Profit ($${profit}) claim korchi...`);
       const claimRes = await apiClaimProfit();
-      if (!claimRes.success) throw new Error('Claim profit failed: ' + claimRes.msg);
+      if (!claimRes.success) throw new Error('Claim profit failed: ' + (claimRes.msg || JSON.stringify(claimRes.data).substring(0, 100)));
       hasActiveOrder = false; activeOrderCountdown = 0;
       lastClaimAmount = profit;
       lastActionStatus = `✅ Claimed $${profit}`;
       send(`✅ *Profit claimed!*
 💰 Amount: $${profit}`);
-    } else {
-      lastActionStatus = 'ℹ️ Kono profit nei';
-      send(`ℹ️ Kono profit claim kora jay na.`);
+    } else if (!hasActiveOrder) {
+      lastActionStatus = 'ℹ️ Kono profit nei, kono active order o nei';
+      send(`ℹ️ Kono profit claim kora jay na. Active order o nei.`);
     }
 
     lastActionTime = new Date();
