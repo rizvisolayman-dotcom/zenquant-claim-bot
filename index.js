@@ -3,6 +3,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OWNER_ID = process.env.OWNER_ID;
@@ -708,11 +709,10 @@ async function runHistory(chatId) {
 process.on('unhandledRejection', (err) => { console.error('UHR:', err.message); });
 process.on('uncaughtException', (err) => { console.error('UCE:', err.message); });
 
-// Self-ping every 10 min to prevent Render free tier spin-down
+// Self-ping every 4 min to prevent Render free tier spin-down
 const MY_URL = process.env.RENDER_EXTERNAL_URL || 'https://zenquant-claim-bot-srv.onrender.com';
-setInterval(() => {
-  axios.get(MY_URL).catch(() => {});
-  console.log('[ping]', new Date().toISOString());
-}, 10 * 60 * 1000);
+const ping = () => https.get(MY_URL, () => {}).on('error', () => {});
+ping(); // startup e ekbar
+setInterval(ping, 4 * 60 * 1000);
 
 console.log('Bot v2 started.');
