@@ -71,18 +71,27 @@ async function refreshActiveOrder() {
       const dealRes = await apiGetDealList(1, 5, t);
       if (dealRes.success && dealRes.data.length) {
         for (const o of dealRes.data) {
-          // Debug: log any order found regardless of status
-          console.log(`[refresh] type=${t} status=${o.status} sn=${(o.ordersn||'').slice(-8)} receive_times=${o.receive_times} profit=${o.profit}`);
-          if (Number(o.status) === 1) {
-            const cd = Number(o.receive_times || 0);
-            if (cd > 0) {
-              hasActiveOrder = true;
-              activeOrderCountdown = cd;
-              nextClaimTime = new Date(Date.now() + (cd * 1000) + BUFFER_MS);
-              creds.nextClaimAt = nextClaimTime.toISOString();
-              saveCredentials(creds);
-              return;
-            }
+          console.log(`[refresh] type=${t} status=${o.status} sn=${(o.ordersn||'').slice(-8)} receive_times=${o.receive_times} profit=${o.profit} has_profit=${o.has_profit} is_receive=${o.is_receive}`);
+          const st = Number(o.status || 0);
+          const cd = Number(o.receive_times || 0);
+          const pf = Number(o.profit || 0);
+          // Active order with countdown > 0
+          if (st === 1 && cd > 0) {
+            hasActiveOrder = true;
+            activeOrderCountdown = cd;
+            nextClaimTime = new Date(Date.now() + (cd * 1000) + BUFFER_MS);
+            creds.nextClaimAt = nextClaimTime.toISOString();
+            saveCredentials(creds);
+            return;
+          }
+          // Order finished (status 2/3) but profit not claimed yet
+          if ((st === 2 || st === 3) && pf > 0 && Number(o.is_receive || 0) === 0) {
+            hasActiveOrder = true;
+            activeOrderCountdown = 0;
+            nextClaimTime = new Date(Date.now() + BUFFER_MS); // claim immediately + buffer
+            creds.nextClaimAt = nextClaimTime.toISOString();
+            saveCredentials(creds);
+            return;
           }
         }
       } else {
