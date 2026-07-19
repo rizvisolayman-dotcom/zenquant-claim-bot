@@ -216,25 +216,30 @@ bot.on('callback_query', async (query) => {
   if (String(chatId) !== String(OWNER_ID))
     return bot.answerCallbackQuery(query.id, { text: 'Authorized na.' });
   const action = query.data;
-  if (action === 'login_start') startLoginFlow(chatId);
-  else if (action === 'logout') doLogout(chatId);
-  else if (action === 'toggle') {
-    if (!isLoggedIn()) return bot.answerCallbackQuery(query.id, { text: 'Age login korun.' });
-    if (autoClaimOn) turnOff(chatId); else turnOn(chatId);
-  } else if (action === 'claim_now') {
-    if (!isLoggedIn()) return bot.answerCallbackQuery(query.id, { text: 'Age login korun.' });
-    bot.answerCallbackQuery(query.id, { text: 'Claim shuru hocche...' });
-    runClaim(chatId, true);
-  } else if (action === 'confirm_inject') {
-    if (!isLoggedIn()) return bot.answerCallbackQuery(query.id, { text: 'Age login korun.' });
-    bot.answerCallbackQuery(query.id, { text: 'Injection shuru hocche...' });
-    runConfirm(chatId);
-  } else if (action === 'history') {
-    if (!isLoggedIn()) return bot.answerCallbackQuery(query.id, { text: 'Age login korun.' });
-    bot.answerCallbackQuery(query.id, { text: 'Order history...' });
-    runHistory(chatId);
-  } else if (action === 'status') sendStatus(chatId);
-  bot.answerCallbackQuery(query.id);
+  try {
+    if (action === 'login_start') startLoginFlow(chatId);
+    else if (action === 'logout') doLogout(chatId);
+    else if (action === 'toggle') {
+      if (!isLoggedIn()) return bot.answerCallbackQuery(query.id, { text: 'Age login korun.' });
+      if (autoClaimOn) turnOff(chatId); else turnOn(chatId);
+      return bot.answerCallbackQuery(query.id);
+    } else if (action === 'claim_now') {
+      if (!isLoggedIn()) return bot.answerCallbackQuery(query.id, { text: 'Age login korun.' });
+      await bot.answerCallbackQuery(query.id, { text: 'Claim shuru hocche...' });
+      return runClaim(chatId, true);
+    } else if (action === 'confirm_inject') {
+      if (!isLoggedIn()) return bot.answerCallbackQuery(query.id, { text: 'Age login korun.' });
+      await bot.answerCallbackQuery(query.id, { text: 'Injection shuru hocche...' });
+      return runConfirm(chatId);
+    } else if (action === 'history') {
+      if (!isLoggedIn()) return bot.answerCallbackQuery(query.id, { text: 'Age login korun.' });
+      await bot.answerCallbackQuery(query.id, { text: 'Order history...' });
+      return runHistory(chatId);
+    } else if (action === 'status') { sendStatus(chatId); return bot.answerCallbackQuery(query.id); }
+  } catch (e) {
+    console.error('Callback query error:', e);
+    bot.sendMessage(chatId, '❌ Error: ' + e.message);
+  }
 });
 
 function sendStatus(chatId) {
@@ -362,6 +367,7 @@ async function runClaim(chatId, manual, isAuto) {
     }
 
   } catch (err) {
+    console.error('runClaim error:', err);
     lastClaimTime = new Date();
     lastClaimStatus = `❌ ${err.message}`;
     send(`❌ Error: ${err.message}`);
@@ -449,6 +455,7 @@ async function runConfirm(chatId, isAuto) {
 ⏱ Next claim: ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
 
   } catch (err) {
+    console.error('runConfirm error:', err);
     lastClaimStatus = `❌ ${err.message}`;
     // Even on failure, keep the cycle alive so it retries in 3h2m
     if (isAuto && !nextClaimTime) {
@@ -539,7 +546,8 @@ async function runHistory(chatId) {
     lines.push(`\nTotal: ${orders.length} orders`);
     bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown', ...mainMenu() });
   } catch (e) {
-    const errBody = e.response?.data ? JSON.stringify(e.response.data).substring(0, 600) : e.message;
+    console.error('runHistory error:', e);
+    const errBody = e.response?.data ? JSON.stringify(e.response.data).substring(0, 800) : e.message;
     bot.sendMessage(chatId, '❌ History error: ' + errBody, mainMenu());
   }
 }
