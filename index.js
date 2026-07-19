@@ -65,26 +65,27 @@ function isOwner(msg) { return String(msg.chat.id) === String(OWNER_ID); }
 function isLoggedIn() { return !!(creds.phone && creds.password); }
 function maskPhone(p) { return p ? p.slice(0, 3) + '****' + p.slice(-2) : ''; }
 async function refreshActiveOrder() {
-  // API theke check kore dekhe kono active order ase ki na
   if (!isLoggedIn()) return;
   try {
-    const dealRes = await apiGetDealList(1, 3, 0);
-    if (dealRes.success && dealRes.data.length) {
-      for (const o of dealRes.data) {
-        if (Number(o.status) === 1) { // status=1 = Active
-          const cd = Number(o.receive_times || 0);
-          if (cd > 0) {
-            hasActiveOrder = true;
-            activeOrderCountdown = cd;
-            nextClaimTime = new Date(Date.now() + (cd * 1000) + BUFFER_MS);
-            creds.nextClaimAt = nextClaimTime.toISOString();
-            saveCredentials(creds);
-            return;
+    // Try all deal types: 0=Regular, 1=Closed, 2=PLUS+
+    for (const t of [0, 2, 1]) {
+      const dealRes = await apiGetDealList(1, 5, t);
+      if (dealRes.success && dealRes.data.length) {
+        for (const o of dealRes.data) {
+          if (Number(o.status) === 1) {
+            const cd = Number(o.receive_times || 0);
+            if (cd > 0) {
+              hasActiveOrder = true;
+              activeOrderCountdown = cd;
+              nextClaimTime = new Date(Date.now() + (cd * 1000) + BUFFER_MS);
+              creds.nextClaimAt = nextClaimTime.toISOString();
+              saveCredentials(creds);
+              return;
+            }
           }
         }
       }
     }
-    // Kono active order nei
     hasActiveOrder = false;
     activeOrderCountdown = 0;
   } catch (_) {}
