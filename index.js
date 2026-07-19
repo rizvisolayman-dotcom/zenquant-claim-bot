@@ -67,11 +67,12 @@ function maskPhone(p) { return p ? p.slice(0, 3) + '****' + p.slice(-2) : ''; }
 async function refreshActiveOrder() {
   if (!isLoggedIn()) return;
   try {
-    // Try all deal types: 0=Regular, 1=Closed, 2=PLUS+
     for (const t of [0, 2, 1]) {
       const dealRes = await apiGetDealList(1, 5, t);
       if (dealRes.success && dealRes.data.length) {
         for (const o of dealRes.data) {
+          // Debug: log any order found regardless of status
+          console.log(`[refresh] type=${t} status=${o.status} sn=${(o.ordersn||'').slice(-8)} receive_times=${o.receive_times} profit=${o.profit}`);
           if (Number(o.status) === 1) {
             const cd = Number(o.receive_times || 0);
             if (cd > 0) {
@@ -84,6 +85,8 @@ async function refreshActiveOrder() {
             }
           }
         }
+      } else {
+        console.log(`[refresh] type=${t} no data or empty: success=${dealRes.success} len=${dealRes.data.length}`);
       }
     }
     hasActiveOrder = false;
@@ -454,14 +457,16 @@ async function runClaim(chatId, manual, isAuto) {
     if (profit === 0) {
       await refreshActiveOrder();
       if (hasActiveOrder) {
-        // Find profit from the active order
         try {
           for (const t of [0, 2, 1]) {
             const dealRes = await apiGetDealList(1, 5, t);
             if (dealRes.success && dealRes.data.length) {
               for (const o of dealRes.data) {
-                if (Number(o.status) === 1 && Number(o.profit || 0) > 0) {
-                  profit = Number(o.profit);
+                if (Number(o.status) === 1) {
+                  profit = Number(o.profit || 0);
+                  if (profit > 0) {
+                    send(`🔍 Order profit found: $${profit} (type=${t})`);
+                  }
                   break;
                 }
               }
@@ -469,6 +474,9 @@ async function runClaim(chatId, manual, isAuto) {
             }
           }
         } catch (_) {}
+      }
+      if (profit === 0 && hasActiveOrder) {
+        send(`🔍 Active order found but profit=0. Check /history for raw data.`);
       }
     }
 
