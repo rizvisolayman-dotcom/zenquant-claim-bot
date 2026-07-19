@@ -483,86 +483,78 @@ async function runConfirm(chatId, isAuto) {
 
 async function runHistory(chatId) {
   if (!isLoggedIn()) return bot.sendMessage(chatId, '❌ Age /login diye login korun.');
+  const send = (t, o) => bot.sendMessage(chatId, t, o || {});
   try {
-    // Try multiple endpoint configurations (GET + POST)
-    const attempts = [
-      () => api.get('/getDealList', { params: { page: 1, size: 20, type: 0 } }),
-      () => api.get('/getDealList', { params: { page: 1, size: 20, type: 1 } }),
-      () => api.get('/getDealList', { params: { page: 1, size: 20, type: 2 } }),
-      () => api.get('/getDealList', { params: { page: 1, size: 20 } }),
-      () => api.post('/getDealList', { page: 1, size: 20, type: 0 }),
-      () => api.post('/getDealList', { page: 1, size: 20 }),
+    // Try ALL possible endpoints and log everything
+    const allAttempts = [
+      { method: 'GET', url: '/getDealList', params: { page: 1, size: 20, type: 0 } },
+      { method: 'GET', url: '/getDealList', params: { page: 1, size: 20, type: 1 } },
+      { method: 'GET', url: '/getDealList', params: { page: 1, size: 20, type: 2 } },
+      { method: 'GET', url: '/getDealList', params: { page: 1, size: 20 } },
+      { method: 'POST', url: '/getDealList', data: { page: 1, size: 20, type: 0 } },
+      { method: 'POST', url: '/getDealList', data: { page: 1, size: 20 } },
+      { method: 'GET', url: '/getDealDetail', params: { ordersn: '0', type: 0 } },
+      { method: 'GET', url: '/getProfitList', params: { page: 1, size: 20 } },
+      { method: 'POST', url: '/getDealList', data: { page: 1, size: 999 } },
     ];
 
-    let body = null;
-    for (const fn of attempts) {
+    const results = [];
+    for (const a of allAttempts) {
       try {
-        const res = await fn();
+        let res;
+        if (a.method === 'GET') res = await api.get(a.url, { params: a.params });
+        else res = await api.post(a.url, a.data);
         const b = res.data;
-        if (b) {
-          body = b;
-          if (b.success || b.code === 200) break;
+        const snippet = JSON.stringify(b).substring(0, 200);
+        results.push(`🔹 ${a.method} ${a.url}: ${snippet}`);
+        console.log(`[history] ${a.method} ${a.url} =>`, JSON.stringify(b).substring(0, 500));
+      } catch (e) {
+        const errMsg = e.response?.data ? JSON.stringify(e.response.data).substring(0, 100) : e.message;
+        results.push(`🔸 ${a.method} ${a.url}: ❌ ${errMsg}`);
+        console.log(`[history] ${a.method} ${a.url} ERROR:`, errMsg);
+      }
+    }
+
+    // Send all results to user
+    const msg = results.join('\n');
+    // Telegram has 4096 char limit — chunk if needed
+    for (let i = 0; i < msg.length; i += 3500) {
+      await send('📖 *History Debug:*\n' + msg.substring(i, i + 3500), { parse_mode: 'Markdown' });
+    }
+
+    // Now try to parse the first successful GET /getDealList response for a nicer view
+    const dealRes = await api.get('/getDealList', { params: { page: 1, size: 20, type: 0 } }).catch(() => null);
+    if (dealRes?.data) {
+      const b = dealRes.data;
+      let orders = [];
+      if (Array.isArray(b?.data?.list)) orders = b.data.list;
+      else if (Array.isArray(b?.data)) orders = b.data;
+      else if (Array.isArray(b?.list)) orders = b.list;
+      else if (Array.isArray(b?.records)) orders = b.records;
+
+      if (orders.length) {
+        const lines = ['📋 *Order List:*'];
+        for (const [idx, order] of orders.entries()) {
+          if (idx === 0) {
+            const fields = Object.entries(order).map(([k, v]) => `${k}=${String(v).substring(0, 25)}`).join(', ');
+            lines.push('📖 *Fields*: ' + fields);
+          }
+          const amount = Number(order.amount || order.price || order.money || 0);
+          const typeName = ['Regular', 'Closed', 'PLUS+', 'Phoenix'][order.type] || `T${order.type}`;
+          const sMap = { 1: '⚡Active', 2: '⏳Redeem', 3: '✅Done', 4: '⏹Stop' };
+          const status = sMap[order.status] || `S${order.status}`;
+          const sn = (order.ordersn || order.orderNo || order.orderno || '').toString().slice(-8);
+          lines.push(`#${sn} ${typeName} $${amount} ${status}`);
         }
-      } catch (_) {}
-    }
-
-    const rawStr = JSON.stringify(body).substring(0, 1500);
-    let orders = [];
-
-    if (body) {
-      if (Array.isArray(body?.data?.list)) orders = body.data.list;
-      else if (Array.isArray(body?.data)) orders = body.data;
-      else if (Array.isArray(body?.list)) orders = body.list;
-      else if (Array.isArray(body?.records)) orders = body.records;
-      else if (body?.data && typeof body.data === 'object') {
-        for (const v of Object.values(body.data)) {
-          if (Array.isArray(v)) { orders = v; break; }
-        }
+        lines.push(`\nTotal: ${orders.length} orders`);
+        await send(lines.join('\n'), { ...mainMenu() });
+      } else {
+        await send('ℹ️ Kono order nei (getDealList empty).', { ...mainMenu() });
       }
     }
-
-    const lines = [];
-    lines.push('📖 *Raw API:* `' + rawStr.replace(/`/g, '').substring(0, 800) + '`');
-
-    if (!orders.length) {
-      lines.push('\nℹ️ Kono order nei.');
-      return bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown', ...mainMenu() });
-    }
-
-    for (const [idx, order] of orders.entries()) {
-      if (idx === 0) {
-        const fields = Object.entries(order).map(([k, v]) => {
-          const val = typeof v === 'object' ? JSON.stringify(v).substring(0, 30) : String(v).substring(0, 30);
-          return `${k}=${val}`;
-        }).join(', ');
-        lines.push('📖 *Fields* | ' + fields);
-      }
-      const amount = Number(order.amount || order.price || order.money || 0);
-      const t = ['Regular', 'Closed', 'PLUS+', 'Phoenix'][order.type] || `T${order.type}`;
-      const statusMap = { 1: '⚡Active', 2: '⏳Redeem', 3: '✅Done', 4: '⏹Stop', executing: '⚡Active', completed: '✅Done' };
-      const status = statusMap[order.status] || `S${order.status}`;
-      const orderSn = (order.ordersn || order.orderNo || order.orderno || order.sn || '').toString().slice(-8);
-      const endField = ['sell_time', 'end_time', 'complete_time', 'finish_time', 'income_time', 'redeem_time', 'endTime', 'sellTime', 'completeTime']
-        .map(f => order[f]).find(v => v);
-      let endStr = '';
-      if (endField) {
-        const et = new Date(endField);
-        if (!isNaN(et)) endStr = ' ⌛' + et.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' });
-      }
-      const createField = ['create_time', 'add_time', 'buy_time', 'start_time', 'createTime', 'addTime'].map(f => order[f]).find(v => v);
-      let createStr = '';
-      if (createField) {
-        const ct = new Date(createField);
-        if (!isNaN(ct)) createStr = ' 🕐' + ct.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' });
-      }
-      lines.push(`#${orderSn} ${t} $${amount} ${status}${createStr}${endStr}`);
-    }
-    lines.push(`\nTotal: ${orders.length} orders`);
-    bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown', ...mainMenu() });
   } catch (e) {
     console.error('runHistory error:', e);
-    const errBody = e.response?.data ? JSON.stringify(e.response.data).substring(0, 1000) : e.message;
-    bot.sendMessage(chatId, '❌ History error: ' + errBody, mainMenu());
+    await send('❌ History error: ' + (e.response?.data ? JSON.stringify(e.response.data).substring(0, 500) : e.message), mainMenu());
   }
 }
 
