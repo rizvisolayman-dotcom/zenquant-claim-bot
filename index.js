@@ -69,14 +69,16 @@ function maskPhone(p) { return p ? p.slice(0, 3) + '****' + p.slice(-2) : ''; }
 async function refreshActiveOrder() {
   if (!isLoggedIn()) return;
   try {
-    for (const t of [0, 2, 1]) {
-      const dealRes = await apiGetDealList(1, 5, t);
+    const typesToTry = [null, 0, 2, 1];
+    for (const t of typesToTry) {
+      const dealRes = await apiGetDealList(1, 20, t);
       if (dealRes.success && dealRes.data.length) {
         for (const o of dealRes.data) {
           console.log(`[refresh] type=${t} status=${o.status} sn=${(o.ordersn||'').slice(-8)} receive_times=${o.receive_times} profit=${o.profit} has_profit=${o.has_profit} is_receive=${o.is_receive}`);
           const st = Number(o.status || 0);
           const cd = Number(o.receive_times || 0);
           const pf = Number(o.profit || 0);
+          const is_recv = Number(o.is_receive || 0);
           // Active order with countdown > 0
           if (st === 1 && cd > 0) {
             hasActiveOrder = true;
@@ -86,23 +88,32 @@ async function refreshActiveOrder() {
             saveCredentials(creds);
             return;
           }
-          // Order finished (status 2/3) but profit not claimed yet
-          if ((st === 2 || st === 3) && pf > 0 && Number(o.is_receive || 0) === 0) {
+          // Order finished (any status 2-6) but profit not claimed yet
+          if (st >= 2 && pf > 0 && is_recv === 0) {
             hasActiveOrder = true;
             activeOrderCountdown = 0;
-            nextClaimTime = new Date(Date.now() + BUFFER_MS); // claim immediately + buffer
+            nextClaimTime = new Date(Date.now() + BUFFER_MS);
             creds.nextClaimAt = nextClaimTime.toISOString();
             saveCredentials(creds);
             return;
           }
         }
       } else {
-        console.log(`[refresh] type=${t} no data or empty: success=${dealRes.success} len=${dealRes.data.length}`);
+        console.log(`[refresh] type=${t} no data: success=${dealRes.success} len=${dealRes.data.length} msg=${dealRes.msg}`);
       }
     }
+    // Also try getDealInfo as backup
+    try {
+      const infoRes = await apiGetDealInfo();
+      if (infoRes.success && infoRes.data) {
+        console.log(`[refresh] dealInfo: ${JSON.stringify(infoRes.data).substring(0, 200)}`);
+      }
+    } catch (_) {}
     hasActiveOrder = false;
     activeOrderCountdown = 0;
-  } catch (_) {}
+  } catch (e) {
+    console.error('[refresh] error:', e.message);
+  }
 }
 
 function formatCountdown(sec) {
@@ -524,35 +535,32 @@ async function runClaim(chatId, manual, isAuto) {
     const balance = Number(u.available_balance || 0);
     const total = Number(u.total_balance || 0);
 
-    // Profit check: userinfo fields + active order from deal list
+    // Profit check: userinfo fields first
     let profit = Number(u.one_profit || 0) + Number(u.two_profit || 0) + Number(u.three_profit || 0)
       + Number(u.recharge_one_profit || 0) + Number(u.recharge_two_profit || 0) + Number(u.recharge_three_profit || 0);
 
-    // If userinfo doesn't have profit fields, check active order's profit
+    // If userinfo doesn't have profit, search ALL deal types for unclaimed profit
     if (profit === 0) {
-      await refreshActiveOrder();
-      if (hasActiveOrder) {
-        try {
-          for (const t of [0, 2, 1]) {
-            const dealRes = await apiGetDealList(1, 5, t);
-            if (dealRes.success && dealRes.data.length) {
-              for (const o of dealRes.data) {
-                if (Number(o.status) === 1) {
-                  profit = Number(o.profit || 0);
-                  if (profit > 0) {
-                    send(`🔍 Order profit found: $${profit} (type=${t})`);
-                  }
-                  break;
-                }
-              }
-              if (profit > 0) break;
+      const tryTypes = [null, 0, 2, 1];
+      for (const t of tryTypes) {
+        const dealRes = await apiGetDealList(1, 20, t);
+        if (dealRes.success && dealRes.data.length) {
+          for (const o of dealRes.data) {
+            const pf = Number(o.profit || 0);
+            const is_recv = Number(o.is_receive || 0);
+            if (pf > 0 && is_recv === 0) {
+              profit = pf;
+              hasActiveOrder = true;
+              activeOrderCountdown = Number(o.receive_times || 0);
+              send(`🔍 Profit found via deal list: $${profit} (type=${t}, status=${o.status})`);
+              break;
             }
           }
-        } catch (_) {}
+          if (profit > 0) break;
+        }
       }
-      if (profit === 0 && hasActiveOrder) {
-        send(`🔍 Active order found but profit=0. Check /history for raw data.`);
-      }
+      // Still nothing? try refreshActiveOrder for state
+      if (profit === 0) await refreshActiveOrder();
     }
 
     send(`📊 *Account Info*
