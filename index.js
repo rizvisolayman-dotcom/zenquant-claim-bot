@@ -217,28 +217,34 @@ bot.on('callback_query', async (query) => {
     return bot.answerCallbackQuery(query.id, { text: 'Authorized na.' });
   const action = query.data;
   try {
-    if (action === 'login_start') startLoginFlow(chatId);
-    else if (action === 'logout') doLogout(chatId);
-    else if (action === 'toggle') {
+    if (action === 'login_start') { startLoginFlow(chatId); return bot.answerCallbackQuery(query.id); }
+    if (action === 'logout') { doLogout(chatId); return bot.answerCallbackQuery(query.id); }
+    if (action === 'toggle') {
       if (!isLoggedIn()) return bot.answerCallbackQuery(query.id, { text: 'Age login korun.' });
       if (autoClaimOn) turnOff(chatId); else turnOn(chatId);
       return bot.answerCallbackQuery(query.id);
-    } else if (action === 'claim_now') {
+    }
+    if (action === 'claim_now') {
       if (!isLoggedIn()) return bot.answerCallbackQuery(query.id, { text: 'Age login korun.' });
       await bot.answerCallbackQuery(query.id, { text: 'Claim shuru hocche...' });
-      return runClaim(chatId, true);
-    } else if (action === 'confirm_inject') {
+      return await runClaim(chatId, true).catch(e => bot.sendMessage(chatId, '❌ ' + e.message));
+    }
+    if (action === 'confirm_inject') {
       if (!isLoggedIn()) return bot.answerCallbackQuery(query.id, { text: 'Age login korun.' });
       await bot.answerCallbackQuery(query.id, { text: 'Injection shuru hocche...' });
-      return runConfirm(chatId);
-    } else if (action === 'history') {
+      return await runConfirm(chatId).catch(e => bot.sendMessage(chatId, '❌ ' + e.message));
+    }
+    if (action === 'history') {
       if (!isLoggedIn()) return bot.answerCallbackQuery(query.id, { text: 'Age login korun.' });
       await bot.answerCallbackQuery(query.id, { text: 'Order history...' });
-      return runHistory(chatId);
-    } else if (action === 'status') { sendStatus(chatId); return bot.answerCallbackQuery(query.id); }
+      return await runHistory(chatId).catch(e => bot.sendMessage(chatId, '❌ ' + e.message));
+    }
+    if (action === 'status') { sendStatus(chatId); return bot.answerCallbackQuery(query.id); }
+    // fallback — unknown action
+    bot.answerCallbackQuery(query.id);
   } catch (e) {
     console.error('Callback query error:', e);
-    bot.sendMessage(chatId, '❌ Error: ' + e.message);
+    bot.sendMessage(chatId, '❌ Error: ' + e.message).catch(() => {});
   }
 });
 
