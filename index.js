@@ -48,8 +48,10 @@ autoClaimOn = !!creds.autoClaimOn;
 if (creds.token) authToken = creds.token;
 if (creds.nextClaimAt) nextClaimTime = new Date(creds.nextClaimAt);
 
-api.interceptors.request.use(cfg => {
+api.interceptors.request.use(async cfg => {
   if (authToken) cfg.headers.Authorization = 'Bearer ' + authToken;
+  // Random 1-3 sec delay before each API call to look human
+  await new Promise(r => setTimeout(r, 1000 + Math.random() * 2000));
   return cfg;
 });
 
@@ -409,7 +411,9 @@ if (autoClaimOn && isLoggedIn() && nextClaimTime && autoClaimChatId) {
 async function autoCycle(chatId) {
   const claimed = await runClaim(chatId, false, true);
   if (claimed) {
-    await new Promise((r) => setTimeout(r, 30000));
+    // Random delay 25-35 sec to avoid bot detection
+    const delay = 25000 + Math.floor(Math.random() * 11000);
+    await new Promise((r) => setTimeout(r, delay));
     await runConfirm(chatId, true);
   } else {
     // No profit to claim — maybe countdown still running, schedule next
