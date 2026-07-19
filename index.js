@@ -422,36 +422,33 @@ async function runConfirm(chatId, isAuto) {
 
     let nextTime = new Date(Date.now() + CLAIM_INTERVAL_MS);
     try {
-      // Try to get exact end time from the order detail
+      // Try to get exact end time from the order list
       const dealRes = await apiGetDealList(1, 5, 0);
       if (dealRes.success && dealRes.data.length) {
         for (const o of dealRes.data) {
-          // First try to fetch detailed info for this order
-          if (o.ordersn || o.orderNo || o.orderno) {
-            const sn = o.ordersn || o.orderNo || o.orderno;
-            const detailRes = await apiGetDealDetail(sn, 0);
-            if (detailRes.success && detailRes.data) {
-              const full = detailRes.data;
-              // Show raw debug for the first order
-              const rawDbg = JSON.stringify(full).substring(0, 400);
-              send(`🔍 Order detail: ${rawDbg}`);
-              // Find end time in full detail
-              const endField = ['sell_time','end_time','complete_time','finish_time','income_time','redeem_time','endTime','sellTime']
-                .map(f => full[f]).find(v => v);
-              if (endField) {
-                const t = new Date(new Date(endField).getTime() + BUFFER_MS);
-                if (t > Date.now() && t < nextTime) nextTime = t;
+          // Parse start time (format "MM-DD HH:mm" from the site)
+          const startField = o.time || o.create_time || '';
+          if (startField) {
+            // time looks like "07-19 07:45" — assume current year, add 3h
+            const match = startField.match(/(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/);
+            if (match) {
+              const now = new Date();
+              const year = now.getFullYear();
+              const mo = parseInt(match[1]) - 1;
+              const day = parseInt(match[2]);
+              const hr = parseInt(match[3]);
+              const min = parseInt(match[4]);
+              const startDate = new Date(year, mo, day, hr, min);
+              // 180 minutes = 3 hours (for minuteIndex 0)
+              const durationMs = 180 * 60 * 1000;
+              const endDate = new Date(startDate.getTime() + durationMs + BUFFER_MS);
+              if (endDate > Date.now() && endDate < nextTime) {
+                nextTime = endDate;
+                send(`🔍 Next claim from order time: ${endDate.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
               }
-              break;
             }
           }
-          // Fallback: check order-level time fields
-          const endField = ['sell_time','end_time','complete_time','finish_time','income_time','redeem_time','endTime','sellTime']
-            .map(f => o[f]).find(v => v);
-          if (endField) {
-            const t = new Date(new Date(endField).getTime() + BUFFER_MS);
-            if (t > Date.now() && t < nextTime) nextTime = t;
-          }
+          break; // only check first order
         }
       }
     } catch (_) {}
@@ -532,18 +529,20 @@ async function runHistory(chatId) {
       else if (Array.isArray(b?.records)) orders = b.records;
 
       if (orders.length) {
-        const lines = ['📋 *Order List:*'];
+        const lines = ['📋 Order List:'];
         for (const [idx, order] of orders.entries()) {
           if (idx === 0) {
             const fields = Object.entries(order).map(([k, v]) => `${k}=${String(v).substring(0, 25)}`).join(', ');
-            lines.push('📖 *Fields*: ' + fields);
+            lines.push('Fields: ' + fields);
           }
           const amount = Number(order.amount || order.price || order.money || 0);
-          const typeName = ['Regular', 'Closed', 'PLUS+', 'Phoenix'][order.type] || `T${order.type}`;
+          const typeIdx = Number(order.deal_type ?? order.type ?? -1);
+          const typeName = ['Regular', 'Closed', 'PLUS+', 'Phoenix'][typeIdx] || `T${typeIdx}`;
           const sMap = { 1: '⚡Active', 2: '⏳Redeem', 3: '✅Done', 4: '⏹Stop' };
           const status = sMap[order.status] || `S${order.status}`;
           const sn = (order.ordersn || order.orderNo || order.orderno || '').toString().slice(-8);
-          lines.push(`#${sn} ${typeName} $${amount} ${status}`);
+          const startTime = order.time || '';
+          lines.push(`#${sn} ${typeName} $${amount} ${status} 🕐${startTime}`);
         }
         lines.push(`\nTotal: ${orders.length} orders`);
         await send(lines.join('\n'), { ...mainMenu() });
