@@ -402,19 +402,19 @@ async function runConfirm(chatId, isAuto) {
     const u = info.userinfo || {};
     const balance = Number(u.available_balance || 0);
 
-    if (balance < 50) {
-      // Not enough balance yet — this is normal right after a $0 profit claim.
-      // Just re-arm the schedule so the next attempt happens on time.
+    const amount = Math.floor(balance);
+
+    if (amount < 1) {
       lastClaimStatus = `ℹ️ Balance kom ($${balance}), injection skip`;
       nextClaimTime = new Date(Date.now() + CLAIM_INTERVAL_MS);
       creds.nextClaimAt = nextClaimTime.toISOString();
       saveCredentials(creds);
-      send(`ℹ️ Balance kom ($${balance}). 50 dollar na hole PLUS+ injection hobe na. পরের চেষ্টা: ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
+      send(`ℹ️ Balance kom ($${balance}). 1 dollar na hole injection hobe na. পরের চেষ্টা: ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
       return;
     }
 
-    send(`⏳ PLUS+ injection create korchi $50...`);
-    const order1 = await apiCreateOrder(2, 50, 0); // type=2 (PLUS+), minuteIndex=0 (3h)
+    send(`⏳ PLUS+ injection create korchi $${amount} (balance: $${balance})...`);
+    const order1 = await apiCreateOrder(2, amount, 0); // type=2 (PLUS+), minuteIndex=0 (3h)
     if (!order1.success) throw new Error('PLUS+ injection failed: ' + order1.msg);
 
     lastClaimTime = new Date();
@@ -459,7 +459,7 @@ async function runConfirm(chatId, isAuto) {
 
     send(`✅ *Injection successful!*
 ━━━━━━━━━━━━━━━━
-➕ PLUS+: $50 (3H)
+➕ PLUS+: $${amount} (3H)
 ━━━━━━━━━━━━━━━━
 ⏱ Next claim: ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
 
