@@ -26,6 +26,8 @@ let lastClaimStatus = 'Kono claim hoyni ekhono';
 let isClaiming = false;
 let pendingLogin = {};
 let autoClaimChatId = null;
+let hasActiveOrder = false;      // true when an order is counting down
+let activeOrderCountdown = 0;    // receive_times from the latest active order
 
 function loadCredentials() {
   try {
@@ -150,13 +152,15 @@ bot.onText(/\/start/, (msg) => {
     lines.push('✅ *Login:* Active');
     if (creds.name) lines.push(`👤 *Name:* ${creds.name}`);
     lines.push(`📱 *Phone:* ${maskPhone(creds.phone)}`);
-    if (nextClaimTime) {
+    if (hasActiveOrder && nextClaimTime) {
       const remainingMs = Math.max(0, nextClaimTime.getTime() - Date.now());
       const remainingSec = Math.floor(remainingMs / 1000);
       if (remainingMs > 0) lines.push(`⏳ *Countdown:* ${formatCountdown(remainingSec)}`);
       lines.push(`🔜 *Next Claim:* ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
+    } else if (nextClaimTime) {
+      lines.push(`🔜 *Next Retry:* ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
     } else {
-      lines.push(`🔜 *Next Claim:* N/A`);
+      lines.push(`🔜 *Next:* N/A`);
     }
   } else {
     lines.push('❌ *Login:* Kora nai');
@@ -203,7 +207,7 @@ bot.on('message', (msg) => {
   if (state.step === 'phone') {
     const phone = msg.text.trim();
     if (!/^\d{6,15}$/.test(phone))
-      return bot.sendMessage(msg.chat.id, '❌ Sotik phone number din (jemon: 1713882071)');
+      return bot.sendMessage(msg.chat.id, '❌ Sotik phone number din (jemon: 17XXXXXXXX)');
     state.phone = phone;
     state.step = 'password';
     bot.sendMessage(msg.chat.id, '🔒 Ekhon password din:');
@@ -231,11 +235,11 @@ bot.on('message', (msg) => {
 
 function startLoginFlow(chatId) {
   pendingLogin[chatId] = { step: 'phone' };
-  bot.sendMessage(chatId, '📱 Country code chara phone number din (jemon: 1713882071):');
+  bot.sendMessage(chatId, '📱 Country code chara phone number din (jemon: 17XXXXXXXX):');
 }
 
 function doLogout(chatId) {
-  autoClaimOn = false; autoClaimChatId = null;
+  autoClaimOn = false; autoClaimChatId = null; hasActiveOrder = false; activeOrderCountdown = 0;
   if (claimTimer) { clearTimeout(claimTimer); claimTimer = null; }
   creds = { phone: null, password: null, token: null, name: null, nextClaimAt: null, autoClaimOn: false };
   authToken = null; nextClaimTime = null;
@@ -297,14 +301,16 @@ function sendStatus(chatId) {
   lines.push(`🔄 *Auto Claim:* ${autoClaimOn ? 'ON' : 'OFF'}`);
   lines.push(`⏱ *Last Claim:* ${lastClaimTime ? lastClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' }) : 'Kono din na'}`);
   lines.push(`📌 *Result:* ${lastClaimStatus}`);
-  if (nextClaimTime) {
+  if (hasActiveOrder && nextClaimTime) {
     const remainingMs = Math.max(0, nextClaimTime.getTime() - Date.now());
     const remainingSec = Math.floor(remainingMs / 1000);
     const countdownStr = remainingMs > 0 ? formatCountdown(remainingSec) : '✅ Ready!';
     lines.push(`⏳ *Countdown:* ${countdownStr}`);
     lines.push(`🔜 *Next Claim:* ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
+  } else if (nextClaimTime) {
+    lines.push(`🔜 *Next Retry:* ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
   } else {
-    lines.push(`🔜 *Next Claim:* N/A`);
+    lines.push(`🔜 *Next:* N/A`);
   }
   lines.push('', '📌 /help — sob command dekhte');
   bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown', ...mainMenu() });
@@ -404,6 +410,8 @@ async function runClaim(chatId, manual, isAuto) {
       send(`⏳ Profit ($${profit}) claim korchi...`);
       const claimRes = await apiClaimProfit();
       if (!claimRes.success) throw new Error('Claim profit failed: ' + claimRes.msg);
+      // Order complete, active order shesh
+      hasActiveOrder = false; activeOrderCountdown = 0;
       lastClaimStatus = '✅ Profit claimed';
       send(`✅ *Profit claimed!*
 💰 Amount: $${profit}`);
@@ -455,40 +463,46 @@ async function runConfirm(chatId, isAuto) {
     const amount = Math.floor(balance);
 
     if (amount < 1) {
+      hasActiveOrder = false; activeOrderCountdown = 0;
       lastClaimStatus = `ℹ️ Balance kom ($${balance}), injection skip`;
       nextClaimTime = new Date(Date.now() + CLAIM_INTERVAL_MS);
       creds.nextClaimAt = nextClaimTime.toISOString();
       saveCredentials(creds);
-      send(`ℹ️ Balance kom ($${balance}). 1 dollar na hole injection hobe na. পরের চেষ্টা: ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
+      send(`ℹ️ Balance kom ($${balance}). 1 dollar na hole injection hobe na.
+🔜 পরের চেষ্টা: ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
       return;
     }
 
     send(`⏳ PLUS+ injection create korchi $${amount} (balance: $${balance})...`);
-    const order1 = await apiCreateOrder(2, amount, 0); // type=2 (PLUS+), minuteIndex=0 (3h)
-    if (!order1.success) throw new Error('PLUS+ injection failed: ' + order1.msg);
+    const order1 = await apiCreateOrder(2, amount, 0);
+    if (!order1.success) {
+      hasActiveOrder = false; activeOrderCountdown = 0;
+      throw new Error('PLUS+ injection failed: ' + (order1.msg || JSON.stringify(order1.data).substring(0, 100)));
+    }
 
     lastClaimTime = new Date();
     lastClaimStatus = '✅ Injection done';
 
-    // Countdown from site er receive_times field
+    // Receive_times from site = actual countdown in seconds
     let countdownSec = 0;
+    let orderSn = '';
     try {
-      await new Promise(r => setTimeout(r, 2000)); // wait for order to appear
+      await new Promise(r => setTimeout(r, 3000));
       const dealRes = await apiGetDealList(1, 5, 0);
       if (dealRes.success && dealRes.data.length) {
         const latest = dealRes.data[0];
-        if (latest.receive_times > 0) {
-          countdownSec = Number(latest.receive_times);
-        }
+        orderSn = latest.ordersn || '';
+        if (latest.receive_times > 0) countdownSec = Number(latest.receive_times);
       }
     } catch (_) {}
 
-    // If countdown found from site, use it; else fallback 3h
     if (countdownSec > 0) {
-      const nextTime = new Date(Date.now() + (countdownSec * 1000) + BUFFER_MS);
-      nextClaimTime = nextTime;
-      send(`🔍 Site countdown: ${formatCountdown(countdownSec)} (${countdownSec}s) + 2min buffer`);
+      hasActiveOrder = true;
+      activeOrderCountdown = countdownSec;
+      nextClaimTime = new Date(Date.now() + (countdownSec * 1000) + BUFFER_MS);
     } else {
+      hasActiveOrder = true;
+      activeOrderCountdown = 10800; // 3h fallback
       nextClaimTime = new Date(Date.now() + CLAIM_INTERVAL_MS);
     }
 
@@ -498,19 +512,20 @@ async function runConfirm(chatId, isAuto) {
     send(`✅ *Injection successful!*
 ━━━━━━━━━━━━━━━━
 ➕ PLUS+: $${amount} (3H)
+⏳ Countdown: ${formatCountdown(activeOrderCountdown)} + 2min buffer
 ━━━━━━━━━━━━━━━━
-⏱ Next claim: ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })} (${countdownSec > 0 ? formatCountdown(countdownSec) : '3h'} + 2min buffer)`);
+🔜 Next claim: ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
 
   } catch (err) {
     console.error('runConfirm error:', err);
+    hasActiveOrder = false; activeOrderCountdown = 0;
     lastClaimStatus = `❌ ${err.message}`;
-    // Even on failure, keep the cycle alive so it retries in 3h2m
-    if (isAuto && !nextClaimTime) {
-      nextClaimTime = new Date(Date.now() + CLAIM_INTERVAL_MS);
-      creds.nextClaimAt = nextClaimTime.toISOString();
-      saveCredentials(creds);
-    }
-    send(`❌ Error: ${err.message}`);
+    // Retry in 30 min on failure
+    nextClaimTime = new Date(Date.now() + 30 * 60 * 1000);
+    creds.nextClaimAt = nextClaimTime.toISOString();
+    saveCredentials(creds);
+    send(`❌ Error: ${err.message}
+🔜 Next retry: ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
   } finally {
     isClaiming = false;
   }
