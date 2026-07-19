@@ -100,8 +100,17 @@ async function apiClaimProfit() {
 async function apiCreateOrder(type, price, minuteIndex) {
   try {
     const res = await api.post('/createOrder', { type, price, minuteIndex: minuteIndex || 0, is_new: 1 });
-    return { success: !!res.data?.success, msg: res.data?.msg || '', data: res.data };
-  } catch (e) { return { success: false, msg: e.response?.data?.msg || e.message }; }
+    const body = res.data;
+    if (body?.success) return { success: true, msg: '', data: body };
+    const code = body?.code || '';
+    const msg = body?.msg || body?.message || `code ${code}`;
+    return { success: false, msg, data: body };
+  } catch (e) {
+    const body = e.response?.data;
+    const code = body?.code || '';
+    const msg = body?.msg || body?.message || e.message || `code ${code}`;
+    return { success: false, msg, data: body };
+  }
 }
 
 async function apiGetDealDetail(ordersn, type) {
@@ -332,8 +341,15 @@ function turnOn(chatId) {
   autoClaimChatId = chatId;
   creds.autoClaimOn = true;
   saveCredentials(creds);
-  bot.sendMessage(chatId, '🟢 Auto Claim ON. Prothom cycle (claim + confirm injection) ekhoni shuru hocche...', mainMenu());
-  autoCycle(chatId);
+  // Check if there's an active order already running
+  if (hasActiveOrder && nextClaimTime && nextClaimTime > Date.now()) {
+    const remainingMs = Math.max(0, nextClaimTime.getTime() - Date.now());
+    const remainingSec = Math.floor(remainingMs / 1000);
+    bot.sendMessage(chatId, `🟢 Auto Claim ON. Active order ase, countdown: ${formatCountdown(remainingSec)} baki.`, mainMenu());
+  } else {
+    bot.sendMessage(chatId, '🟢 Auto Claim ON. Prothom cycle ekhoni shuru hocche...', mainMenu());
+    autoCycle(chatId);
+  }
   scheduleNext();
 }
 
@@ -359,19 +375,26 @@ if (autoClaimOn && isLoggedIn() && nextClaimTime && autoClaimChatId) {
   scheduleNext();
 }
 
-// Full unattended cycle: claim profit -> wait a moment -> confirm injection.
-// Used by the scheduler and by "Auto Claim: ON" so nobody has to tap the
-// Confirm Injection button by hand.
 async function autoCycle(chatId) {
-  await runClaim(chatId, false, true);
-  await new Promise((r) => setTimeout(r, 30000)); // 30 sec buffer before re-injecting
-  await runConfirm(chatId, true);
+  const claimed = await runClaim(chatId, false, true);
+  if (claimed) {
+    await new Promise((r) => setTimeout(r, 30000));
+    await runConfirm(chatId, true);
+  } else {
+    // No profit to claim — maybe countdown still running, schedule next
+    if (!nextClaimTime || nextClaimTime <= Date.now()) {
+      nextClaimTime = new Date(Date.now() + CLAIM_INTERVAL_MS);
+      creds.nextClaimAt = nextClaimTime.toISOString();
+      saveCredentials(creds);
+    }
+  }
 }
 
 async function runClaim(chatId, manual, isAuto) {
-  if (!isLoggedIn()) return bot.sendMessage(chatId, '❌ Age /login diye login korun.');
-  if (isClaiming) return bot.sendMessage(chatId, '⏳ Ager claim ekhono cholche, wait korun.');
+  if (!isLoggedIn()) { bot.sendMessage(chatId, '❌ Age /login diye login korun.'); return false; }
+  if (isClaiming) { bot.sendMessage(chatId, '⏳ Ager claim ekhono cholche, wait korun.'); return false; }
   isClaiming = true;
+  let didClaim = false;
   const send = (t) => bot.sendMessage(chatId, t);
 
   try {
@@ -416,6 +439,7 @@ async function runClaim(chatId, manual, isAuto) {
     }
 
     if (profit > 0) {
+      didClaim = true;
       send(`⏳ Profit ($${profit}) claim korchi...`);
       const claimRes = await apiClaimProfit();
       if (!claimRes.success) throw new Error('Claim profit failed: ' + claimRes.msg);
@@ -453,6 +477,7 @@ async function runClaim(chatId, manual, isAuto) {
   } finally {
     isClaiming = false;
   }
+  return didClaim;
 }
 
 async function runConfirm(chatId, isAuto) {
