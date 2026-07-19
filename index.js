@@ -532,7 +532,8 @@ async function runClaim(chatId, manual, isAuto) {
       creds.name = u.username; saveCredentials(creds);
     }
 
-    const balance = Number(u.available_balance || 0);
+    const cashBalance = Number(u.balance || 0);
+    const availQuota = Number(u.available_balance || 0);
     const total = Number(u.total_balance || 0);
 
     // Profit check: userinfo fields first
@@ -569,7 +570,8 @@ async function runClaim(chatId, manual, isAuto) {
 
     send(`📊 *Account Info*
 👤 Name: ${u.username || creds.name || 'N/A'}
-💰 Balance: $${balance}
+💰 Cash: $${cashBalance}
+📊 Available: $${availQuota}
 📦 Total: $${total}
 💵 Claimable Profit: $${profit}`);
 
