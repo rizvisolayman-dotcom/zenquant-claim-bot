@@ -58,6 +58,17 @@ const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 function isOwner(msg) { return String(msg.chat.id) === String(OWNER_ID); }
 function isLoggedIn() { return !!(creds.phone && creds.password); }
 function maskPhone(p) { return p ? p.slice(0, 3) + '****' + p.slice(-2) : ''; }
+function formatCountdown(sec) {
+  if (!sec || sec <= 0) return '0s';
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  let r = '';
+  if (h > 0) r += h + 'h ';
+  if (m > 0) r += m + 'm ';
+  r += s + 's';
+  return r;
+}
 
 async function apiLogin(phone, password) {
   try {
@@ -139,7 +150,14 @@ bot.onText(/\/start/, (msg) => {
     lines.push('✅ *Login:* Active');
     if (creds.name) lines.push(`👤 *Name:* ${creds.name}`);
     lines.push(`📱 *Phone:* ${maskPhone(creds.phone)}`);
-    lines.push(`🔜 *Next Claim:* ${nextClaimTime ? nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' }) : 'N/A'}`);
+    if (nextClaimTime) {
+      const remainingMs = Math.max(0, nextClaimTime.getTime() - Date.now());
+      const remainingSec = Math.floor(remainingMs / 1000);
+      if (remainingMs > 0) lines.push(`⏳ *Countdown:* ${formatCountdown(remainingSec)}`);
+      lines.push(`🔜 *Next Claim:* ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
+    } else {
+      lines.push(`🔜 *Next Claim:* N/A`);
+    }
   } else {
     lines.push('❌ *Login:* Kora nai');
   }
@@ -279,10 +297,15 @@ function sendStatus(chatId) {
   lines.push(`🔄 *Auto Claim:* ${autoClaimOn ? 'ON' : 'OFF'}`);
   lines.push(`⏱ *Last Claim:* ${lastClaimTime ? lastClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' }) : 'Kono din na'}`);
   lines.push(`📌 *Result:* ${lastClaimStatus}`);
-  const nextStr = nextClaimTime
-    ? nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })
-    : 'N/A';
-  lines.push(`🔜 *Next Claim:* ${nextStr}`);
+  if (nextClaimTime) {
+    const remainingMs = Math.max(0, nextClaimTime.getTime() - Date.now());
+    const remainingSec = Math.floor(remainingMs / 1000);
+    const countdownStr = remainingMs > 0 ? formatCountdown(remainingSec) : '✅ Ready!';
+    lines.push(`⏳ *Countdown:* ${countdownStr}`);
+    lines.push(`🔜 *Next Claim:* ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
+  } else {
+    lines.push(`🔜 *Next Claim:* N/A`);
+  }
   lines.push('', '📌 /help — sob command dekhte');
   bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown', ...mainMenu() });
 }
@@ -358,10 +381,23 @@ async function runClaim(chatId, manual, isAuto) {
 💵 Claimable Profit: $${profit}`);
 
     if (profit === 0) {
-      // Debug dump so we can see the real field names from the API and fix
-      // the profit calculation if it's wrong.
-      const rawU = JSON.stringify(u).substring(0, 900);
-      send(`🔍 Debug (profit $0 dekhale eta check koro):\n\`${rawU.replace(/[\`]/g, '')}\``);
+      // Check if an active order is still counting down
+      try {
+        const dealRes = await apiGetDealList(1, 1, 0);
+        if (dealRes.success && dealRes.data.length) {
+          const active = dealRes.data[0];
+          const cd = Number(active.receive_times || 0);
+          if (cd > 0) {
+            send(`⏳ Active order countdown: ${formatCountdown(cd)} baki. Profit claim korte ${formatCountdown(cd)} pore abar try korun.`);
+          } else {
+            send(`ℹ️ Kono profit claim kora jay na (profit $0).`);
+          }
+        } else {
+          send(`ℹ️ Kono profit claim kora jay na (profit $0).`);
+        }
+      } catch (_) {
+        send(`ℹ️ Kono profit claim kora jay na (profit $0).`);
+      }
     }
 
     if (profit > 0) {
@@ -434,40 +470,28 @@ async function runConfirm(chatId, isAuto) {
     lastClaimTime = new Date();
     lastClaimStatus = '✅ Injection done';
 
-    let nextTime = new Date(Date.now() + CLAIM_INTERVAL_MS);
+    // Countdown from site er receive_times field
+    let countdownSec = 0;
     try {
-      // Try to get exact end time from the order list
+      await new Promise(r => setTimeout(r, 2000)); // wait for order to appear
       const dealRes = await apiGetDealList(1, 5, 0);
       if (dealRes.success && dealRes.data.length) {
-        for (const o of dealRes.data) {
-          // Parse start time (format "MM-DD HH:mm" from the site)
-          const startField = o.time || o.create_time || '';
-          if (startField) {
-            // time looks like "07-19 07:45" — assume current year, add 3h
-            const match = startField.match(/(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/);
-            if (match) {
-              const now = new Date();
-              const year = now.getFullYear();
-              const mo = parseInt(match[1]) - 1;
-              const day = parseInt(match[2]);
-              const hr = parseInt(match[3]);
-              const min = parseInt(match[4]);
-              const startDate = new Date(year, mo, day, hr, min);
-              // 180 minutes = 3 hours (for minuteIndex 0)
-              const durationMs = 180 * 60 * 1000;
-              const endDate = new Date(startDate.getTime() + durationMs + BUFFER_MS);
-              if (endDate > Date.now() && endDate < nextTime) {
-                nextTime = endDate;
-                send(`🔍 Next claim from order time: ${endDate.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
-              }
-            }
-          }
-          break; // only check first order
+        const latest = dealRes.data[0];
+        if (latest.receive_times > 0) {
+          countdownSec = Number(latest.receive_times);
         }
       }
     } catch (_) {}
 
-    nextClaimTime = nextTime;
+    // If countdown found from site, use it; else fallback 3h
+    if (countdownSec > 0) {
+      const nextTime = new Date(Date.now() + (countdownSec * 1000) + BUFFER_MS);
+      nextClaimTime = nextTime;
+      send(`🔍 Site countdown: ${formatCountdown(countdownSec)} (${countdownSec}s) + 2min buffer`);
+    } else {
+      nextClaimTime = new Date(Date.now() + CLAIM_INTERVAL_MS);
+    }
+
     creds.nextClaimAt = nextClaimTime.toISOString();
     saveCredentials(creds);
 
@@ -475,7 +499,7 @@ async function runConfirm(chatId, isAuto) {
 ━━━━━━━━━━━━━━━━
 ➕ PLUS+: $${amount} (3H)
 ━━━━━━━━━━━━━━━━
-⏱ Next claim: ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
+⏱ Next claim: ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })} (${countdownSec > 0 ? formatCountdown(countdownSec) : '3h'} + 2min buffer)`);
 
   } catch (err) {
     console.error('runConfirm error:', err);
