@@ -25,6 +25,7 @@ let lastClaimTime = null;
 let lastClaimStatus = 'Kono claim hoyni ekhono';
 let isClaiming = false;
 let pendingLogin = {};
+let autoClaimChatId = null;
 
 function loadCredentials() {
   try {
@@ -133,39 +134,52 @@ function mainMenu() {
 }
 
 bot.onText(/\/start/, (msg) => {
-  if (!isOwner(msg)) return;
   const lines = ['🤖 *ZenQuant Auto Claim Bot*', ''];
   if (isLoggedIn()) {
     lines.push('✅ *Login:* Active');
     if (creds.name) lines.push(`👤 *Name:* ${creds.name}`);
     lines.push(`📱 *Phone:* ${maskPhone(creds.phone)}`);
+    lines.push(`🔜 *Next Claim:* ${nextClaimTime ? nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' }) : 'N/A'}`);
   } else {
     lines.push('❌ *Login:* Kora nai');
   }
+  lines.push('', '📌 /help — sob command dekhte');
   bot.sendMessage(msg.chat.id, lines.join('\n'), { parse_mode: 'Markdown', ...mainMenu() });
 });
 
-bot.onText(/\/login/, (msg) => { if (isOwner(msg)) startLoginFlow(msg.chat.id); });
-bot.onText(/\/logout/, (msg) => { if (isOwner(msg)) doLogout(msg.chat.id); });
-bot.onText(/\/status/, (msg) => { if (isOwner(msg)) sendStatus(msg.chat.id); });
+bot.onText(/\/help/, (msg) => {
+  bot.sendMessage(msg.chat.id,
+    '📚 *Available Commands*\n\n' +
+    '/start — Bot restart\n' +
+    '/login — ZenQuant account login\n' +
+    '/logout — Logout\n' +
+    '/status — Account status + next claim time\n' +
+    '/claim — Claim available profit\n' +
+    '/confirm — Confirm injection (PLUS+)\n' +
+    '/history — Order history\n' +
+    '/help — Ei message',
+    { parse_mode: 'Markdown', ...mainMenu() }
+  );
+});
+
+bot.onText(/\/login/, (msg) => { startLoginFlow(msg.chat.id); });
+bot.onText(/\/logout/, (msg) => { doLogout(msg.chat.id); });
+bot.onText(/\/status/, (msg) => { sendStatus(msg.chat.id); });
 bot.onText(/\/claim/, (msg) => {
-  if (!isOwner(msg)) return;
   if (!isLoggedIn()) return bot.sendMessage(msg.chat.id, '❌ Age /login diye login korun.');
   runClaim(msg.chat.id, true);
 });
 bot.onText(/\/confirm/, (msg) => {
-  if (!isOwner(msg)) return;
   if (!isLoggedIn()) return bot.sendMessage(msg.chat.id, '❌ Age /login diye login korun.');
   runConfirm(msg.chat.id);
 });
 bot.onText(/\/history/, (msg) => {
-  if (!isOwner(msg)) return;
   if (!isLoggedIn()) return bot.sendMessage(msg.chat.id, '❌ Age /login diye login korun.');
   runHistory(msg.chat.id);
 });
 
 bot.on('message', (msg) => {
-  if (!isOwner(msg) || !msg.text || msg.text.startsWith('/')) return;
+  if (!msg.text || msg.text.startsWith('/')) return;
   const state = pendingLogin[msg.chat.id];
   if (!state) return;
   if (state.step === 'phone') {
@@ -203,7 +217,7 @@ function startLoginFlow(chatId) {
 }
 
 function doLogout(chatId) {
-  autoClaimOn = false;
+  autoClaimOn = false; autoClaimChatId = null;
   if (claimTimer) { clearTimeout(claimTimer); claimTimer = null; }
   creds = { phone: null, password: null, token: null, name: null, nextClaimAt: null, autoClaimOn: false };
   authToken = null; nextClaimTime = null;
@@ -213,8 +227,6 @@ function doLogout(chatId) {
 
 bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
-  if (String(chatId) !== String(OWNER_ID))
-    return bot.answerCallbackQuery(query.id, { text: 'Authorized na.' });
   const action = query.data;
   function requireLogin() {
     if (!isLoggedIn()) {
@@ -271,6 +283,7 @@ function sendStatus(chatId) {
     ? nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })
     : 'N/A';
   lines.push(`🔜 *Next Claim:* ${nextStr}`);
+  lines.push('', '📌 /help — sob command dekhte');
   bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'Markdown', ...mainMenu() });
 }
 
@@ -278,6 +291,7 @@ function turnOn(chatId) {
   if (!isLoggedIn()) return bot.sendMessage(chatId, '❌ Age /login diye login korun.', mainMenu());
   if (autoClaimOn) return bot.sendMessage(chatId, 'Already ON ache.', mainMenu());
   autoClaimOn = true;
+  autoClaimChatId = chatId;
   creds.autoClaimOn = true;
   saveCredentials(creds);
   bot.sendMessage(chatId, '🟢 Auto Claim ON. Prothom cycle (claim + confirm injection) ekhoni shuru hocche...', mainMenu());
@@ -293,16 +307,16 @@ function turnOff(chatId) {
 
 function scheduleNext() {
   if (claimTimer) clearTimeout(claimTimer);
-  if (!autoClaimOn) return;
+  if (!autoClaimOn || !autoClaimChatId) return;
   if (nextClaimTime) {
     const delay = Math.max(0, nextClaimTime.getTime() - Date.now());
-    claimTimer = setTimeout(() => { autoCycle(OWNER_ID); scheduleNext(); }, delay);
+    claimTimer = setTimeout(() => { autoCycle(autoClaimChatId); scheduleNext(); }, delay);
   } else {
-    claimTimer = setTimeout(() => { autoCycle(OWNER_ID); scheduleNext(); }, CLAIM_INTERVAL_MS);
+    claimTimer = setTimeout(() => { autoCycle(autoClaimChatId); scheduleNext(); }, CLAIM_INTERVAL_MS);
   }
 }
 
-if (autoClaimOn && isLoggedIn() && nextClaimTime) {
+if (autoClaimOn && isLoggedIn() && nextClaimTime && autoClaimChatId) {
   console.log('Resuming auto claim scheduler...');
   scheduleNext();
 }
