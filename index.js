@@ -166,6 +166,13 @@ async function apiClaimProfit() {
   } catch (e) { return { success: false, msg: e.message }; }
 }
 
+async function apiClaimOrder(ordersn) {
+  try {
+    const res = await api.post('/receiveOrder', { ordersn });
+    return { success: !!res.data?.success, msg: res.data?.msg || '', data: res.data };
+  } catch (e) { return { success: false, msg: e.message }; }
+}
+
 async function apiCreateOrder(type, price, minuteIndex) {
   try {
     const res = await api.post('/createOrder', { type, price, minuteIndex: minuteIndex || 0, is_new: 1 });
@@ -564,35 +571,53 @@ async function runClaim(chatId, manual, isAuto) {
     const availQuota = Number(u.available_balance || 0);
     const total = Number(u.total_balance || 0);
 
-    // ALWAYS try direct claim first — API knows best if profit is available
-    let profit = 0;
+    // Step 1: try global claim endpoint
+    let profit = 0, claimCount = 0;
     send(`🔍 Claim checking...`);
     const claimRes = await apiClaimProfit();
     if (claimRes.success) {
-      didClaim = true;
+      didClaim = true; claimCount++;
       hasActiveOrder = false; activeOrderCountdown = 0;
-      lastActionStatus = `✅ Profit claimed!`;
-      send(`✅ *Profit claimed successfully!*`);
     } else {
-      const errCode = claimRes.data?.code || '';
-      if (errCode === 1001) {
-        send(`ℹ️ Currently no claimable profit.`);
-      }
+      send(`ℹ️ ${claimRes.data?.code === 1001 ? 'Global claim: no profit' : 'Global claim failed'}`);
+    }
 
+    // Step 2: try per-order claim for ALL un-received orders
+    const tryTypes = [null, 0, 2, 1];
+    for (const t of tryTypes) {
+      const dealRes = await apiGetDealList(1, 20, t);
+      if (dealRes.success && dealRes.data.length) {
+        for (const o of dealRes.data) {
+          const is_recv = Number(o.is_receive || 0);
+          if (is_recv === 0) {
+            const orderRes = await apiClaimOrder(o.ordersn);
+            if (orderRes.success) {
+              didClaim = true; claimCount++;
+              hasActiveOrder = false; activeOrderCountdown = 0;
+              profit += Number(o.profit || 0) || Number(orderRes.data || 0);
+              send(`✅ Order #${o.ordersn.slice(-8)} claimed!`);
+            }
+          }
+        }
+      }
+      if (didClaim && claimCount > 0) break;
+    }
+
+    if (didClaim) {
+      lastActionStatus = `✅ Profit claimed (${claimCount} order(s))`;
+      send(`✅ *Profit claimed!*`);
+    } else {
       // Detection fallback (for display / state tracking)
-      const tryTypes = [null, 0, 2, 1];
       for (const t of tryTypes) {
         const dealRes = await apiGetDealList(1, 20, t);
         if (dealRes.success && dealRes.data.length) {
           for (const o of dealRes.data) {
             const pf = Number(o.profit || 0);
-            const is_recv = Number(o.is_receive || 0);
             const st = Number(o.status || 0);
             const cd = Number(o.receive_times || 0);
-            const claimable = (st === 1 && cd === 0) || st === 2 || st === 3;
-            if (pf > 0 && is_recv === 0 && claimable) {
+            if (pf > 0) {
               profit = pf;
-              hasActiveOrder = true;
+              hasActiveOrder = (st === 1 || st === 2 || st === 3);
               activeOrderCountdown = cd;
               break;
             }
