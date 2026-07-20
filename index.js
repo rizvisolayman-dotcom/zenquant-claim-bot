@@ -675,7 +675,15 @@ async function runClaim(chatId, manual, isAuto) {
 
 async function runConfirm(chatId, isAuto, customAmount) {
   if (!isLoggedIn()) return bot.sendMessage(chatId, '❌ Age /login diye login korun.');
-  if (isClaiming) return bot.sendMessage(chatId, '⏳ Age injection shesh hok, wait korun.');
+  if (isClaiming) {
+    // Safety: if stuck more than 5 min, auto-reset
+    if (lastActionTime && (Date.now() - lastActionTime.getTime()) > 300000) {
+      isClaiming = false;
+      console.log('isClaiming was stuck >5min, force reset');
+    } else {
+      return bot.sendMessage(chatId, '⏳ Age injection shesh hok, wait korun.');
+    }
+  }
   if (hasActiveOrder) {
     lastActionStatus = 'ℹ️ Already have an active order, skip injection';
     if (!isAuto) bot.sendMessage(chatId, 'ℹ️ Age active order shesh hok, tarpor inject korben.');
