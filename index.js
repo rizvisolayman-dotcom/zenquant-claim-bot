@@ -707,10 +707,18 @@ async function runConfirm(chatId, isAuto, customAmount) {
 
   try {
     send('⏳ Info nicchi...');
-    const info = await apiGetInfo();
-    if (!info) throw new Error('API response failed');
 
-    const u = info.userinfo || {};
+    // Use getDealInfo for correct order-creation balance
+    const dealInfo = await apiGetDealInfo();
+    if (!dealInfo.success || !dealInfo.data) throw new Error('API response failed');
+    const dealData = dealInfo.data;
+    const ui = dealData.userinfo || {};
+    const orderBalance = Number(ui.balance || 0); // $43.56 (correct)
+    const dealLimit = Number(dealData.new_deal_order?.deal_limit_balance || 50);
+
+    // Also get regular info for virtual check
+    const info = await apiGetInfo();
+    const u = info?.userinfo || {};
 
     // Check virtual balance — counts as active position
     const virtualBal = Number(u.virtual_balance || 0);
@@ -724,13 +732,11 @@ async function runConfirm(chatId, isAuto, customAmount) {
       return;
     }
 
-    const balance = Number(u.available_balance || 0);
-
-    let amount = customAmount || Math.floor(balance);
-    const MAX_INJECT = 50;
+    let amount = customAmount || Math.floor(orderBalance);
+    const MAX_INJECT = Math.min(50, dealLimit);
     if (amount > MAX_INJECT && !customAmount) {
       amount = MAX_INJECT;
-      send(`ℹ️ Balance $${balance}, but max injection $${MAX_INJECT}. Using $${MAX_INJECT}.`);
+      send(`ℹ️ Balance $${orderBalance}, but max injection $${MAX_INJECT}. Using $${MAX_INJECT}.`);
     }
 
     if (amount < 1) {
