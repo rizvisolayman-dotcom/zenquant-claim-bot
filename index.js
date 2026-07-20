@@ -564,12 +564,22 @@ async function runClaim(chatId, manual, isAuto) {
     const availQuota = Number(u.available_balance || 0);
     const total = Number(u.total_balance || 0);
 
-    // Profit check: userinfo fields first
-    let profit = Number(u.one_profit || 0) + Number(u.two_profit || 0) + Number(u.three_profit || 0)
-      + Number(u.recharge_one_profit || 0) + Number(u.recharge_two_profit || 0) + Number(u.recharge_three_profit || 0);
+    // ALWAYS try direct claim first — API knows best if profit is available
+    let profit = 0;
+    send(`🔍 Claim checking...`);
+    const claimRes = await apiClaimProfit();
+    if (claimRes.success) {
+      didClaim = true;
+      hasActiveOrder = false; activeOrderCountdown = 0;
+      lastActionStatus = `✅ Profit claimed!`;
+      send(`✅ *Profit claimed successfully!*`);
+    } else {
+      const errCode = claimRes.data?.code || '';
+      if (errCode === 1001) {
+        send(`ℹ️ Currently no claimable profit.`);
+      }
 
-    // If userinfo doesn't have profit, search ALL deal types for unclaimed profit
-    if (profit === 0) {
+      // Detection fallback (for display / state tracking)
       const tryTypes = [null, 0, 2, 1];
       for (const t of tryTypes) {
         const dealRes = await apiGetDealList(1, 20, t);
@@ -579,56 +589,32 @@ async function runClaim(chatId, manual, isAuto) {
             const is_recv = Number(o.is_receive || 0);
             const st = Number(o.status || 0);
             const cd = Number(o.receive_times || 0);
-            // Only claimable: status 1 (countdown done), 2 (Redeem), 3 (Done)
             const claimable = (st === 1 && cd === 0) || st === 2 || st === 3;
             if (pf > 0 && is_recv === 0 && claimable) {
               profit = pf;
               hasActiveOrder = true;
               activeOrderCountdown = cd;
-              send(`🔍 Profit found via deal list: $${profit} (type=${t}, status=${st})`);
               break;
             }
           }
           if (profit > 0) break;
         }
       }
-      // Still nothing? try refreshActiveOrder for state
       if (profit === 0) await refreshActiveOrder();
+
+      if (hasActiveOrder && activeOrderCountdown > 0) {
+        send(`⏳ Active order countdown: ${formatCountdown(activeOrderCountdown)} baki.`);
+      } else if (!hasActiveOrder) {
+        lastActionStatus = 'ℹ️ Kono profit nei, kono active order o nei';
+        send(`ℹ️ Kono profit claim kora jay na. Active order o nei.`);
+      }
     }
 
     send(`📊 *Account Info*
 👤 Name: ${u.username || creds.name || 'N/A'}
 💰 Cash: $${cashBalance}
 📊 Available: $${availQuota}
-📦 Total: $${total}
-💵 Claimable Profit: $${profit}`);
-
-    if (hasActiveOrder && activeOrderCountdown > 0 && profit === 0) {
-      send(`⏳ Active order countdown: ${formatCountdown(activeOrderCountdown)} baki.`);
-    }
-
-    if (profit > 0) {
-      didClaim = true;
-      send(`⏳ Profit ($${profit}) claim korchi...`);
-      const claimRes = await apiClaimProfit();
-      if (!claimRes.success) {
-        const errCode = claimRes.data?.code || '';
-        if (errCode === 1001) {
-          send(`⚠️ Profit detect hoyeche but claim kora jacchena (code 1001). Order ta valid na.`);
-          hasActiveOrder = false; activeOrderCountdown = 0;
-          didClaim = false;
-        }
-        throw new Error('Claim profit failed: ' + (claimRes.msg || JSON.stringify(claimRes.data).substring(0, 100)));
-      }
-      hasActiveOrder = false; activeOrderCountdown = 0;
-      lastClaimAmount = profit;
-      lastActionStatus = `✅ Claimed $${profit}`;
-      send(`✅ *Profit claimed!*
-💰 Amount: $${profit}`);
-    } else if (!hasActiveOrder) {
-      lastActionStatus = 'ℹ️ Kono profit nei, kono active order o nei';
-      send(`ℹ️ Kono profit claim kora jay na. Active order o nei.`);
-    }
+📦 Total: $${total}`);
 
     lastActionTime = new Date();
 
