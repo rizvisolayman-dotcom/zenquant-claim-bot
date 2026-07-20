@@ -59,12 +59,24 @@ api.interceptors.request.use(async cfg => {
 });
 
 const app = express();
+app.use(express.json());
 app.get('/', (req, res) => res.send('ZenQuant Claim Bot v2 is running.'));
-app.listen(process.env.PORT || 3000, () => console.log('Web server started.'));
 
-// Close any stale polling session before starting
-try { https.get(`https://api.telegram.org/bot${BOT_TOKEN}/close`); } catch (_) {}
-const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+const isRailway = !!process.env.RAILWAY_SERVICE_ID;
+const bot = isRailway
+  ? new TelegramBot(BOT_TOKEN)
+  : new TelegramBot(BOT_TOKEN, { polling: true });
+
+if (isRailway) {
+  const RAILWAY_URL = `https://zenquant-bot-2.railway.app`;
+  bot.setWebHook(`${RAILWAY_URL}/webhook/${BOT_TOKEN}`);
+  app.post(`/webhook/${BOT_TOKEN}`, (req, res) => {
+    bot.processUpdate(req.body);
+    res.sendStatus(200);
+  });
+}
+
+app.listen(process.env.PORT || 3000, () => console.log('Web server started.'));
 
 function isOwner(msg) { return String(msg.chat.id) === String(OWNER_ID); }
 function isLoggedIn() { return !!(creds.phone && creds.password); }
