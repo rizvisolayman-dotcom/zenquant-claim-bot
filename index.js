@@ -508,9 +508,9 @@ function scheduleNext() {
   if (!autoClaimOn || !autoClaimChatId) return;
   if (nextClaimTime) {
     const delay = Math.max(0, nextClaimTime.getTime() - Date.now());
-    claimTimer = setTimeout(() => { autoCycle(autoClaimChatId); scheduleNext(); }, delay);
+    claimTimer = setTimeout(() => { autoCycle(autoClaimChatId); }, delay);
   } else {
-    claimTimer = setTimeout(() => { autoCycle(autoClaimChatId); scheduleNext(); }, CLAIM_INTERVAL_MS);
+    claimTimer = setTimeout(() => { autoCycle(autoClaimChatId); }, CLAIM_INTERVAL_MS);
   }
 }
 
@@ -544,6 +544,8 @@ async function autoCycle(chatId) {
       saveCredentials(creds);
     }
   }
+  // Always schedule next cycle when current one finishes
+  scheduleNext();
 }
 
 async function runClaim(chatId, manual, isAuto) {
