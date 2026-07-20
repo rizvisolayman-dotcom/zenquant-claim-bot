@@ -62,6 +62,8 @@ const app = express();
 app.get('/', (req, res) => res.send('ZenQuant Claim Bot v2 is running.'));
 app.listen(process.env.PORT || 3000, () => console.log('Web server started.'));
 
+// Close any stale polling session before starting
+try { https.get(`https://api.telegram.org/bot${BOT_TOKEN}/close`); } catch (_) {}
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
 function isOwner(msg) { return String(msg.chat.id) === String(OWNER_ID); }
