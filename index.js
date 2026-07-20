@@ -706,19 +706,13 @@ async function runConfirm(chatId, isAuto, customAmount) {
     if (!dealInfo.success || !dealInfo.data) throw new Error('API response failed');
     const dealData = dealInfo.data;
     const ui = dealData.userinfo || {};
-    const orderBalance = Number(ui.balance || 0); // $43.56 (correct)
-    const dealLimit = Number(dealData.new_deal_order?.deal_limit_balance || 50);
+    const orderBalance = Number(ui.balance || 0);
 
     // Also get regular info for virtual check
     const info = await apiGetInfo();
     const u = info?.userinfo || {};
 
     let amount = customAmount || Math.floor(orderBalance);
-    const MAX_INJECT = Math.min(50, dealLimit);
-    if (amount > MAX_INJECT && !customAmount) {
-      amount = MAX_INJECT;
-      send(`ℹ️ Balance $${orderBalance}, but max injection $${MAX_INJECT}. Using $${MAX_INJECT}.`);
-    }
 
     if (amount < 1) {
       hasActiveOrder = false; activeOrderCountdown = 0;
