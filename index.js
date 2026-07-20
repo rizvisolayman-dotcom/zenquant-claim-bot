@@ -712,21 +712,21 @@ async function runConfirm(chatId, isAuto, customAmount) {
 
     if (amount < 1) {
       hasActiveOrder = false; activeOrderCountdown = 0;
-      lastActionStatus = `ℹ️ Balance kom ($${balance}), injection skip`;
+      lastActionStatus = `ℹ️ Balance kom ($${orderBalance}), injection skip`;
       nextClaimTime = new Date(Date.now() + CLAIM_INTERVAL_MS);
       creds.nextClaimAt = nextClaimTime.toISOString();
       saveCredentials(creds);
-      send(`ℹ️ Balance kom ($${balance}). 1 dollar na hole injection hobe na.
+      send(`ℹ️ Balance kom ($${orderBalance}). 1 dollar na hole injection hobe na.
 🔜 পরের চেষ্টা: ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
       return;
     }
 
-    if (customAmount && customAmount > balance) {
-      send(`⚠️ Custom amount ($${customAmount}) balance er cheye beshi! ${Math.floor(balance)} use korchi.`);
-      amount = Math.floor(balance);
+    if (customAmount && customAmount > orderBalance) {
+      send(`⚠️ Custom amount ($${customAmount}) balance er cheye beshi! ${Math.floor(orderBalance)} use korchi.`);
+      amount = Math.floor(orderBalance);
     }
 
-    send(`⏳ PLUS+ injection create korchi $${amount} (balance: $${balance})...`);
+    send(`⏳ PLUS+ injection create korchi $${amount} (balance: $${orderBalance})...`);
     const order1 = await apiCreateOrder(2, amount, 0);
     if (!order1.success) {
       hasActiveOrder = false; activeOrderCountdown = 0;
