@@ -533,18 +533,6 @@ if (autoClaimOn && isLoggedIn() && autoClaimChatId) {
 async function autoCycle(chatId) {
   const claimed = await runClaim(chatId, false, true);
   if (claimed) {
-    // Check if virtual order is now active
-    const info = await apiGetInfo();
-    const virtualBal = Number(info?.userinfo?.virtual_balance || 0);
-    const virtualCd = Number(info?.userinfo?.virtual_count_down || 0);
-    if (virtualBal > 0 && virtualCd > 0) {
-      hasActiveOrder = true;
-      activeOrderCountdown = virtualCd;
-      nextClaimTime = new Date(Date.now() + (virtualCd * 1000) + BUFFER_MS);
-      creds.nextClaimAt = nextClaimTime.toISOString();
-      saveCredentials(creds);
-      return;
-    }
     const delay = 25000 + Math.floor(Math.random() * 11000);
     await new Promise((r) => setTimeout(r, delay));
     await runConfirm(chatId, true);
@@ -642,11 +630,6 @@ async function runClaim(chatId, manual, isAuto) {
 
       if (hasActiveOrder && activeOrderCountdown > 0) {
         send(`⏳ Active order countdown: ${formatCountdown(activeOrderCountdown)} baki.`);
-      } else if (virtualBal > 0 && virtualCd > 0) {
-        hasActiveOrder = true;
-        activeOrderCountdown = virtualCd;
-        lastActionStatus = `⏳ Virtual active, ${formatCountdown(virtualCd)} baki`;
-        send(`🧊 Virtual order active: ${formatCountdown(virtualCd)} baki.`);
       } else if (!hasActiveOrder) {
         lastActionStatus = 'ℹ️ Kono profit nei, kono active order o nei';
         send(`ℹ️ Kono profit claim kora jay na. Active order o nei.`);
@@ -719,18 +702,6 @@ async function runConfirm(chatId, isAuto, customAmount) {
     // Also get regular info for virtual check
     const info = await apiGetInfo();
     const u = info?.userinfo || {};
-
-    // Check virtual balance — counts as active position
-    const virtualBal = Number(u.virtual_balance || 0);
-    const virtualCd = Number(u.virtual_count_down || 0);
-    if (virtualBal > 0 && virtualCd > 0) {
-      hasActiveOrder = true;
-      activeOrderCountdown = virtualCd;
-      const eta = formatCountdown(virtualCd);
-      lastActionStatus = `ℹ️ Virtual balance active (${eta} remaining)`;
-      if (!isAuto) bot.sendMessage(chatId, `ℹ️ Virtual balance ($${virtualBal}) active. Wait ${eta}.`);
-      return;
-    }
 
     let amount = customAmount || Math.floor(orderBalance);
     const MAX_INJECT = Math.min(50, dealLimit);
