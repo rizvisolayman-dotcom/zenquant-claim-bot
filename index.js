@@ -38,7 +38,7 @@ function loadCredentials() {
     if (fs.existsSync(CRED_FILE))
       return JSON.parse(fs.readFileSync(CRED_FILE, 'utf8'));
   } catch (e) { console.error('Credential load error:', e.message); }
-  return { phone: null, password: null, token: null, name: null, nextClaimAt: null, autoClaimOn: false, notifOn: true };
+  return { phone: null, password: null, token: null, name: null, nextClaimAt: null, autoClaimOn: false, notifOn: true, autoClaimChatId: null };
 }
 function saveCredentials(data) {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -49,6 +49,7 @@ let creds = loadCredentials();
 autoClaimOn = !!creds.autoClaimOn;
 if (creds.token) authToken = creds.token;
 if (creds.nextClaimAt) nextClaimTime = new Date(creds.nextClaimAt);
+if (creds.autoClaimChatId) autoClaimChatId = creds.autoClaimChatId;
 
 api.interceptors.request.use(async cfg => {
   if (authToken) cfg.headers.Authorization = 'Bearer ' + authToken;
@@ -353,7 +354,7 @@ function doLogout(chatId) {
   autoClaimOn = false; autoClaimChatId = null; hasActiveOrder = false; activeOrderCountdown = 0;
   lastInjectionTime = null; lastClaimAmount = null;
   if (claimTimer) { clearTimeout(claimTimer); claimTimer = null; }
-  creds = { phone: null, password: null, token: null, name: null, nextClaimAt: null, autoClaimOn: false, notifOn: true };
+  creds = { phone: null, password: null, token: null, name: null, nextClaimAt: null, autoClaimOn: false, notifOn: true, autoClaimChatId: null };
   authToken = null; nextClaimTime = null;
   saveCredentials(creds);
   bot.sendMessage(chatId, '🚪 Logout hoyeche.', mainMenu());
@@ -457,6 +458,7 @@ function turnOn(chatId) {
   autoClaimOn = true;
   autoClaimChatId = chatId;
   creds.autoClaimOn = true;
+  creds.autoClaimChatId = chatId;
   saveCredentials(creds);
 
   // API theke active order check korbo (memory state reset hoye geleo)
@@ -474,7 +476,8 @@ function turnOn(chatId) {
 }
 
 function turnOff(chatId) {
-  autoClaimOn = false; creds.autoClaimOn = false; saveCredentials(creds);
+  autoClaimOn = false; autoClaimChatId = null;
+  creds.autoClaimOn = false; creds.autoClaimChatId = null; saveCredentials(creds);
   if (claimTimer) { clearTimeout(claimTimer); claimTimer = null; }
   bot.sendMessage(chatId, '🔴 Auto Claim OFF.', mainMenu());
 }
@@ -490,9 +493,20 @@ function scheduleNext() {
   }
 }
 
-if (autoClaimOn && isLoggedIn() && nextClaimTime && autoClaimChatId) {
+if (autoClaimOn && isLoggedIn() && autoClaimChatId) {
   console.log('Resuming auto claim scheduler...');
-  scheduleNext();
+  refreshActiveOrder().then(() => {
+    if (!nextClaimTime || nextClaimTime <= Date.now()) {
+      if (hasActiveOrder) {
+        nextClaimTime = new Date(Date.now() + 2 * 60 * 1000); // claim in 2 min
+      } else {
+        nextClaimTime = new Date(Date.now() + CLAIM_INTERVAL_MS);
+      }
+      creds.nextClaimAt = nextClaimTime.toISOString();
+      saveCredentials(creds);
+    }
+    scheduleNext();
+  });
 }
 
 async function autoCycle(chatId) {
