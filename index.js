@@ -713,6 +713,11 @@ async function runConfirm(chatId, isAuto, customAmount) {
     const u = info?.userinfo || {};
 
     let amount = customAmount || Math.floor(orderBalance);
+    const MAX_INJECT = 50;
+    if (amount > MAX_INJECT && !customAmount) {
+      amount = MAX_INJECT;
+      send(`ℹ️ Balance $${orderBalance}, but max injection $${MAX_INJECT}. Using $${MAX_INJECT}.`);
+    }
 
     if (amount < 1) {
       hasActiveOrder = false; activeOrderCountdown = 0;
