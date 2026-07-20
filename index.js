@@ -646,6 +646,11 @@ async function runClaim(chatId, manual, isAuto) {
 async function runConfirm(chatId, isAuto, customAmount) {
   if (!isLoggedIn()) return bot.sendMessage(chatId, '❌ Age /login diye login korun.');
   if (isClaiming) return bot.sendMessage(chatId, '⏳ Age injection shesh hok, wait korun.');
+  if (hasActiveOrder) {
+    lastActionStatus = 'ℹ️ Already have an active order, skip injection';
+    if (!isAuto) bot.sendMessage(chatId, 'ℹ️ Age active order shesh hok, tarpor inject korben.');
+    return;
+  }
   isClaiming = true;
   delete pendingAmount[chatId];
   const send = (t) => {
@@ -725,14 +730,16 @@ async function runConfirm(chatId, isAuto, customAmount) {
 
   } catch (err) {
     console.error('runConfirm error:', err);
-    hasActiveOrder = false; activeOrderCountdown = 0;
     lastActionStatus = `❌ ${err.message}`;
-    // Retry in 30 min on failure
-    nextClaimTime = new Date(Date.now() + 30 * 60 * 1000);
-    creds.nextClaimAt = nextClaimTime.toISOString();
-    saveCredentials(creds);
+    // Don't blindly clear hasActiveOrder — refresh from API
+    await refreshActiveOrder().catch(() => {});
+    if (!hasActiveOrder) {
+      nextClaimTime = new Date(Date.now() + 30 * 60 * 1000);
+      creds.nextClaimAt = nextClaimTime.toISOString();
+      saveCredentials(creds);
+    }
     send(`❌ Error: ${err.message}
-🔜 Next retry: ${nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' })}`);
+🔜 Next retry: ${nextClaimTime ? nextClaimTime.toLocaleString('en-GB', { timeZone: 'Asia/Dhaka' }) : 'scheduled'}`);
   } finally {
     isClaiming = false;
   }
