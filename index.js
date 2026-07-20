@@ -533,7 +533,18 @@ if (autoClaimOn && isLoggedIn() && autoClaimChatId) {
 async function autoCycle(chatId) {
   const claimed = await runClaim(chatId, false, true);
   if (claimed) {
-    // Random delay 25-35 sec to avoid bot detection
+    // Check if virtual order is now active
+    const info = await apiGetInfo();
+    const virtualBal = Number(info?.userinfo?.virtual_balance || 0);
+    const virtualCd = Number(info?.userinfo?.virtual_count_down || 0);
+    if (virtualBal > 0 && virtualCd > 0) {
+      hasActiveOrder = true;
+      activeOrderCountdown = virtualCd;
+      nextClaimTime = new Date(Date.now() + (virtualCd * 1000) + BUFFER_MS);
+      creds.nextClaimAt = nextClaimTime.toISOString();
+      saveCredentials(creds);
+      return;
+    }
     const delay = 25000 + Math.floor(Math.random() * 11000);
     await new Promise((r) => setTimeout(r, delay));
     await runConfirm(chatId, true);
@@ -570,6 +581,8 @@ async function runClaim(chatId, manual, isAuto) {
     const cashBalance = Number(u.balance || 0);
     const availQuota = Number(u.available_balance || 0);
     const total = Number(u.total_balance || 0);
+    const virtualBal = Number(u.virtual_balance || 0);
+    const virtualCd = Number(u.virtual_count_down || 0);
 
     // Step 1: try global claim endpoint
     let profit = 0, claimCount = 0;
@@ -629,6 +642,11 @@ async function runClaim(chatId, manual, isAuto) {
 
       if (hasActiveOrder && activeOrderCountdown > 0) {
         send(`⏳ Active order countdown: ${formatCountdown(activeOrderCountdown)} baki.`);
+      } else if (virtualBal > 0 && virtualCd > 0) {
+        hasActiveOrder = true;
+        activeOrderCountdown = virtualCd;
+        lastActionStatus = `⏳ Virtual active, ${formatCountdown(virtualCd)} baki`;
+        send(`🧊 Virtual order active: ${formatCountdown(virtualCd)} baki.`);
       } else if (!hasActiveOrder) {
         lastActionStatus = 'ℹ️ Kono profit nei, kono active order o nei';
         send(`ℹ️ Kono profit claim kora jay na. Active order o nei.`);
@@ -639,12 +657,16 @@ async function runClaim(chatId, manual, isAuto) {
 👤 Name: ${u.username || creds.name || 'N/A'}
 💰 Cash: $${cashBalance}
 📊 Available: $${availQuota}
-📦 Total: $${total}`);
+📦 Total: $${total}${virtualBal > 0 ? `\n🧊 Virtual: $${virtualBal} (${formatCountdown(virtualCd)})` : ''}`);
 
     lastActionTime = new Date();
 
     if (isAuto) {
-      send(`🔁 Auto mode: ekhon nijer theke *Confirm Injection* cholbe...`);
+      if (virtualBal > 0 && virtualCd > 0) {
+        // Don't suggest injection — virtual is active
+      } else {
+        send(`🔁 Auto mode: ekhon nijer theke *Confirm Injection* cholbe...`);
+      }
     } else {
       const confirmBtns = {
         reply_markup: {
@@ -689,6 +711,19 @@ async function runConfirm(chatId, isAuto, customAmount) {
     if (!info) throw new Error('API response failed');
 
     const u = info.userinfo || {};
+
+    // Check virtual balance — counts as active position
+    const virtualBal = Number(u.virtual_balance || 0);
+    const virtualCd = Number(u.virtual_count_down || 0);
+    if (virtualBal > 0 && virtualCd > 0) {
+      hasActiveOrder = true;
+      activeOrderCountdown = virtualCd;
+      const eta = formatCountdown(virtualCd);
+      lastActionStatus = `ℹ️ Virtual balance active (${eta} remaining)`;
+      if (!isAuto) bot.sendMessage(chatId, `ℹ️ Virtual balance ($${virtualBal}) active. Wait ${eta}.`);
+      return;
+    }
+
     const balance = Number(u.available_balance || 0);
 
     let amount = customAmount || Math.floor(balance);
